@@ -1,0 +1,7 @@
+↓→←↑
+
+In Animation:
+
+1. Ease In Out
+2. Ease Out
+

@@ -1,0 +1,10 @@
+{
+  "name": "zeuslab",
+  "version": "1.9.3",
+  "description": "ZeusLab Blender addon for Zeus's animation workflow",
+  "private": true,
+  "author": "Putra Tegar",
+  "scripts": {
+    "package": "node scripts/package.js"
+  }
+}
