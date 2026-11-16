@@ -2,8 +2,8 @@
     "version": [
         1,
         9,
-        3
+        4
     ],
-    "download_url": "https://drive.google.com/uc?export=download&id=1jBw0X8AE1ExxjA_qLmR3nkmISbfovYWU",
-    "changelog": "1. Adding Feature Animz\n2. Adding Coming Soon Feature\n3. Integrate All tool into one Category\n4. Fix some bug"
+    "download_url": "https://github.com/explainervid-glitch/zeuslab-addon/releases/download/v1.9.4/ZeusLab-v1.9.4.zip",
+    "changelog": "1. build: add npm run release to tag and publish GitHub releases\n2. feat(animz): add looping Wiggle modifier and fix pop-up bugs\n3. fix(animz): repair node template and Blender 5 keyframing; fix bonesnap; drop 3D Explainer Style"
 }
