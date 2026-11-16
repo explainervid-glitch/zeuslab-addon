@@ -5,6 +5,7 @@
   "private": true,
   "author": "Putra Tegar",
   "scripts": {
-    "package": "node scripts/package.js"
+    "package": "node scripts/package.js",
+    "release": "node scripts/release.js"
   }
 }

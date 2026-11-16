@@ -8,8 +8,19 @@ import random
 import re
 
 NODE_GROUP_NAME = "auto_pop_up"
+WIGGLE_NODE_GROUP_NAME = "auto_wiggle"
 # Harus sama dengan custom property "animz_version" pada node group di template/auto_pop_up.blend
-TEMPLATE_VERSION = 2
+TEMPLATE_VERSION = 3
+WIGGLE_VERSION = 1
+
+# Tipe object yang bisa memakai modifier Geometry Nodes AnimZ
+SUPPORTED_TYPES = {'MESH', 'CURVE', 'FONT'}
+NO_SELECTION_MESSAGE = "No Mesh, Curve or Text objects selected"
+
+
+def get_supported_selected(context):
+    """Object terpilih yang bisa dianimasikan AnimZ"""
+    return [obj for obj in context.selected_objects if obj.type in SUPPORTED_TYPES]
 
 # =======================================================
 # Function
@@ -57,11 +68,163 @@ def find_socket_by_name(node_group, name, socket_type):
     return None
 
 
-def randomize_wiggle_offset(node_group, modifier):
-    """Offset wiggle acak per object supaya object tidak bergoyang serempak"""
-    offset_id = find_socket_by_name(node_group, "Offset", 'NodeSocketFloat')
-    if offset_id and offset_id in modifier:
-        modifier[offset_id] = random.uniform(0.0, 100.0)
+def _modifier_inputs(modifier):
+    """
+    Blender 5.2+: nilai input Geometry Nodes ada di modifier.properties.inputs.
+    Blender 5.0/5.1: masih IDProperty langsung di modifier (None di sini).
+    """
+    props = getattr(modifier, 'properties', None)
+    return getattr(props, 'inputs', None)
+
+
+def has_input(modifier, identifier):
+    inputs = _modifier_inputs(modifier)
+    if inputs is not None:
+        return hasattr(inputs, identifier)
+    return identifier in modifier
+
+
+def get_input(modifier, identifier):
+    inputs = _modifier_inputs(modifier)
+    if inputs is not None:
+        return getattr(inputs, identifier).value
+    return modifier[identifier]
+
+
+def set_input(modifier, identifier, value):
+    inputs = _modifier_inputs(modifier)
+    if inputs is not None:
+        getattr(inputs, identifier).value = value
+    else:
+        modifier[identifier] = value
+
+
+def input_data_path(modifier, identifier):
+    """Data path untuk keyframe input modifier, relatif terhadap object"""
+    if _modifier_inputs(modifier) is not None:
+        return f'modifiers["{modifier.name}"].properties.inputs.{identifier}.value'
+    return f'modifiers["{modifier.name}"]["{identifier}"]'
+
+
+def draw_input(layout, modifier, identifier, text=None):
+    """Tampilkan input modifier di panel (API 5.2+ dan 5.0/5.1)"""
+    inputs = _modifier_inputs(modifier)
+    if inputs is not None:
+        layout.prop(getattr(inputs, identifier), "value", text=text if text is not None else "")
+    else:
+        layout.prop(modifier, f'["{identifier}"]', text=text if text is not None else "")
+
+
+def find_modifier(obj, node_group):
+    """Modifier Geometry Nodes di obj yang memakai node_group"""
+    if node_group is None:
+        return None
+    for mod in obj.modifiers:
+        if mod.type == 'NODES' and mod.node_group == node_group:
+            return mod
+    return None
+
+
+def get_input_max(node_group, identifier):
+    """Nilai max socket input di interface node group"""
+    for item in node_group.interface.items_tree:
+        if item.item_type == 'SOCKET' and item.identifier == identifier:
+            return getattr(item, 'max_value', None)
+    return None
+
+
+def check_preset_supported(node_group, socket_id, value):
+    """
+    Preset baru (mis. In 11) tidak ada di node group versi lama. Index Switch di
+    luar range memberi scale 0, object hilang permanen. Returns pesan error atau None.
+    """
+    max_value = get_input_max(node_group, socket_id) if socket_id else None
+    if max_value is not None and value > max_value:
+        return (f"This preset needs node group v{TEMPLATE_VERSION} "
+                f"(file has v{get_node_group_version(node_group)}). Click 'Upgrade Node Group' first")
+    return None
+
+
+def clear_keyframes(obj, data_path):
+    """Hapus semua keyframe di fcurve data_path, supaya animasi baru menggantikan yang lama"""
+    fcurves = get_fcurves(obj)
+    if not fcurves:
+        return
+    for fcurve in fcurves:
+        if fcurve.data_path == data_path:
+            points = fcurve.keyframe_points
+            for i in range(len(points) - 1, -1, -1):
+                points.remove(points[i], fast=True)
+            fcurve.update()
+            break
+
+
+def get_key_range(obj, data_path):
+    """(frame pertama, frame terakhir) keyframe di data_path, atau None"""
+    fcurves = get_fcurves(obj)
+    if not fcurves:
+        return None
+    for fcurve in fcurves:
+        if fcurve.data_path == data_path and len(fcurve.keyframe_points):
+            frames = [kp.co.x for kp in fcurve.keyframe_points]
+            return (min(frames), max(frames))
+    return None
+
+
+def is_animation_shared(obj):
+    """True bila object lain memakai action + slot yang sama (fcurve dipakai bersama)"""
+    anim = obj.animation_data
+    if not anim or not anim.action:
+        return False
+    slot = getattr(anim, 'action_slot', None)
+    for other in bpy.data.objects:
+        if other == obj or not other.animation_data:
+            continue
+        if other.animation_data.action == anim.action and getattr(other.animation_data, 'action_slot', None) == slot:
+            return True
+    return False
+
+
+def remove_modifier_fcurves(obj, modifier_name):
+    """
+    Hapus fcurve milik modifier tertentu saja. Fcurve lain (termasuk milik
+    tool lain) tidak disentuh. Returns jumlah fcurve terhapus, -1 bila action dipakai bersama.
+    """
+    fcurves = get_fcurves(obj)
+    if not fcurves:
+        return 0
+    if is_animation_shared(obj):
+        return -1
+    prefix = f'modifiers["{modifier_name}"]'
+    removed = 0
+    for i in range(len(fcurves) - 1, -1, -1):
+        if fcurves[i].data_path.startswith(prefix):
+            fcurves.remove(fcurves[i])
+            removed += 1
+    return removed
+
+
+def report_overlaps(operator, objects, node_group):
+    """Warning bila animasi Out dimulai sebelum animasi In selesai"""
+    in_id = find_float_socket(node_group)
+    out_id = find_out_float_socket(node_group)
+    overlapping = []
+    for obj in objects:
+        modifier = find_modifier(obj, node_group)
+        if modifier is None:
+            continue
+        in_range = get_key_range(obj, input_data_path(modifier, in_id)) if in_id else None
+        out_range = get_key_range(obj, input_data_path(modifier, out_id)) if out_id else None
+        if in_range and out_range and out_range[0] < in_range[1]:
+            overlapping.append(obj.name)
+    if overlapping:
+        names = ", ".join(overlapping[:3]) + (" ..." if len(overlapping) > 3 else "")
+        operator.report({'WARNING'}, f"Out starts before In ends on {len(overlapping)} object(s): {names}")
+
+
+def node_group_in_use(node_group):
+    """Jumlah user nyata (fake user tidak dihitung)"""
+    return node_group.users - (1 if node_group.use_fake_user else 0) > 0
 
 
 def get_node_group_version(node_group):
@@ -81,7 +244,7 @@ def get_template_path():
     return template_file
 
 
-def append_template_node_group():
+def append_template_node_group(name=NODE_GROUP_NAME):
     """
     Append node group dari template. Bila nama sudah dipakai, Blender memberi
     akhiran .001, nilai return selalu node group hasil append.
@@ -90,9 +253,9 @@ def append_template_node_group():
     if not os.path.exists(template_file):
         return None
     with bpy.data.libraries.load(template_file, link=False) as (data_from, data_to):
-        if NODE_GROUP_NAME not in data_from.node_groups:
+        if name not in data_from.node_groups:
             return None
-        data_to.node_groups = [NODE_GROUP_NAME]
+        data_to.node_groups = [name]
     node_group = data_to.node_groups[0] if data_to.node_groups else None
     if node_group:
         node_group.use_fake_user = False
@@ -111,24 +274,65 @@ def collect_nested_groups(node_group, found=None):
     return found
 
 
-def get_or_append_node_group():
+def get_or_append_node_group(name=NODE_GROUP_NAME):
     """Pakai node group yang sudah ada di file, append dari template bila belum ada"""
-    node_group = bpy.data.node_groups.get(NODE_GROUP_NAME)
+    node_group = bpy.data.node_groups.get(name)
     if node_group:
         return node_group
-    node_group = append_template_node_group()
+    node_group = append_template_node_group(name)
     if node_group:
-        node_group.name = NODE_GROUP_NAME
+        node_group.name = name
     return node_group
+
+
+def add_wiggle_modifier(obj, wiggle_group, source=None):
+    """
+    Tambah (atau pakai yang ada) modifier auto_wiggle dengan seed acak.
+    source: modifier wiggle lain untuk disalin nilainya (kecuali Seed).
+    Returns modifier.
+    """
+    modifier = find_modifier(obj, wiggle_group)
+    if modifier is None:
+        modifier = obj.modifiers.new(name=WIGGLE_NODE_GROUP_NAME, type='NODES')
+        modifier.node_group = wiggle_group
+    seed_id = find_socket_by_name(wiggle_group, "Seed", 'NodeSocketInt')
+    if source is not None and source != modifier:
+        copy_wiggle_settings(wiggle_group, source, modifier)
+    if seed_id and has_input(modifier, seed_id):
+        set_input(modifier, seed_id, random.randint(0, 99999))
+    return modifier
+
+
+def copy_wiggle_settings(wiggle_group, source, target):
+    """Salin semua nilai wiggle dari source ke target, kecuali Seed"""
+    for item in wiggle_group.interface.items_tree:
+        if (item.item_type != 'SOCKET' or item.in_out != 'INPUT' or
+                item.socket_type == 'NodeSocketGeometry' or item.name == "Seed"):
+            continue
+        if has_input(source, item.identifier) and has_input(target, item.identifier):
+            value = get_input(source, item.identifier)
+            set_input(target, item.identifier, tuple(value) if hasattr(value, '__len__') else value)
 
 
 def upgrade_node_group():
     """
     Ganti node group lama dengan versi template terbaru. Modifier dan keyframe
     tetap terhubung karena identifier socket tidak berubah.
+    Object yang memakai Wiggle lama (v2) mendapat modifier auto_wiggle baru.
     Returns: (success: bool, message: str)
     """
     old = bpy.data.node_groups.get(NODE_GROUP_NAME)
+
+    # Object dengan Wiggle lama aktif (Wiggle dulu ada di dalam auto_pop_up)
+    wiggle_objects = []
+    if old is not None:
+        old_wiggle_id = find_socket_by_name(old, "Wiggle", 'NodeSocketBool')
+        if old_wiggle_id:
+            for obj in bpy.data.objects:
+                mod = find_modifier(obj, old)
+                if mod and has_input(mod, old_wiggle_id) and get_input(mod, old_wiggle_id):
+                    wiggle_objects.append(obj)
+
     new = append_template_node_group()
     if new is None:
         return (False, f"Template not found: {get_template_path()}")
@@ -150,7 +354,16 @@ def upgrade_node_group():
         base = re.sub(r"\.\d{3}$", "", sub.name)
         if base != sub.name and base not in bpy.data.node_groups:
             sub.name = base
-    return (True, f"Upgraded node group v{old_version} -> v{TEMPLATE_VERSION}")
+
+    message = f"Upgraded node group v{old_version} -> v{TEMPLATE_VERSION}"
+    if wiggle_objects:
+        wiggle_group = get_or_append_node_group(WIGGLE_NODE_GROUP_NAME)
+        if wiggle_group:
+            for obj in wiggle_objects:
+                add_wiggle_modifier(obj, wiggle_group)
+            message += f" | Wiggle moved to separate modifier on {len(wiggle_objects)} object(s)"
+    return (True, message)
+
 
 def find_float_socket(node_group):
     """
@@ -203,22 +416,6 @@ def find_int_socket(node_group):
     return None
 
 
-def remove_keyframes_at_frame(obj, data_path, frame):
-    """Hapus keyframe existing di frame tertentu untuk mencegah duplikasi"""
-    fcurves = get_fcurves(obj)
-    if not fcurves:
-        return
-
-    for fcurve in fcurves:
-        if fcurve.data_path == data_path:
-            # Hapus dari belakang untuk menghindari index shift
-            for i in range(len(fcurve.keyframe_points) - 1, -1, -1):
-                if abs(fcurve.keyframe_points[i].co.x - frame) < 0.01:  # Toleransi floating point
-                    fcurve.keyframe_points.remove(fcurve.keyframe_points[i], fast=True)
-            fcurve.update()
-            break
-
-
 def setup_popup_modifier(obj, context, node_group, animation_type_value, add_keyframes=True):
     """
     Setup modifier auto_pop_up pada object (dengan atau tanpa keyframing).
@@ -251,7 +448,6 @@ def setup_popup_modifier(obj, context, node_group, animation_type_value, add_key
         if modifier is None:
             modifier = obj.modifiers.new(name="auto_pop_up", type='NODES')
             modifier.node_group = node_group
-            randomize_wiggle_offset(node_group, modifier)
 
         # === 2. PINDAHKAN MODIFIER KE INDEX 0 ===
         mod_index = obj.modifiers.find(modifier.name)
@@ -261,9 +457,9 @@ def setup_popup_modifier(obj, context, node_group, animation_type_value, add_key
                     bpy.ops.object.modifier_move_up(modifier=modifier.name)
         
         # === 3. SET NILAI SOCKET INTEGER (TYPE ANIMASI) ===
-        if int_socket_id and int_socket_id in modifier:
+        if int_socket_id and has_input(modifier, int_socket_id):
             try:
-                modifier[int_socket_id] = animation_type_value
+                set_input(modifier, int_socket_id, animation_type_value)
             except Exception as e:
                 pass  # Non-critical
         
@@ -275,23 +471,22 @@ def setup_popup_modifier(obj, context, node_group, animation_type_value, add_key
             current_frame = scene.frame_current
             end_frame = current_frame + animz_props.frame_duration
             
-            data_path = f'modifiers["{modifier.name}"]["{float_socket_id}"]'
+            data_path = input_data_path(modifier, float_socket_id)
             
             # Validasi akses socket float
             try:
-                _ = modifier[float_socket_id]
+                _ = get_input(modifier, float_socket_id)
             except Exception as e:
                 return (False, f"Float socket inaccessible on {obj.name}: {str(e)}")
             
-            # Hapus keyframe existing
-            remove_keyframes_at_frame(obj, data_path, current_frame)
-            remove_keyframes_at_frame(obj, data_path, end_frame)
+            # Ganti animasi lama (bukan menambah), supaya object tidak pop dua kali
+            clear_keyframes(obj, data_path)
             
             # Insert keyframes
-            modifier[float_socket_id] = 0.0
+            set_input(modifier, float_socket_id, 0.0)
             obj.keyframe_insert(data_path=data_path, frame=current_frame)
             
-            modifier[float_socket_id] = 1.0
+            set_input(modifier, float_socket_id, 1.0)
             obj.keyframe_insert(data_path=data_path, frame=end_frame)
             
             # Set interpolasi linear
@@ -375,7 +570,6 @@ def setup_popup_out_modifier(obj, context, node_group, animation_type_value, add
         if modifier is None:
             modifier = obj.modifiers.new(name="auto_pop_up", type='NODES')
             modifier.node_group = node_group
-            randomize_wiggle_offset(node_group, modifier)
 
         # === 2. PINDAH KE INDEX 0 (sama seperti IN) ===
         mod_index = obj.modifiers.find(modifier.name)
@@ -385,10 +579,10 @@ def setup_popup_out_modifier(obj, context, node_group, animation_type_value, add
                     bpy.ops.object.modifier_move_up(modifier=modifier.name)
         
         # === 3. SET NILAI SOCKET INTEGER (OUT TYPE) + FORCE UPDATE ===
-        if int_socket_id and int_socket_id in modifier:
+        if int_socket_id and has_input(modifier, int_socket_id):
             try:
                 # LANGKAH KRITIS 1: Set nilai
-                modifier[int_socket_id] = animation_type_value
+                set_input(modifier, int_socket_id, animation_type_value)
                 
                 # LANGKAH KRITIS 2: Force depsgraph tag pada object
                 obj.update_tag(refresh={'OBJECT'})
@@ -408,22 +602,21 @@ def setup_popup_out_modifier(obj, context, node_group, animation_type_value, add
             animz_props = scene.animz_properties
             current_frame = scene.frame_current
             end_frame = current_frame + animz_props.out_frame_duration
-            data_path = f'modifiers["{modifier.name}"]["{float_socket_id}"]'
+            data_path = input_data_path(modifier, float_socket_id)
             
             # Validasi akses socket
             try:
-                _ = modifier[float_socket_id]
+                _ = get_input(modifier, float_socket_id)
             except Exception as e:
                 return (False, f"OUT float socket inaccessible: {str(e)}")
             
-            # Hapus keyframe existing
-            remove_keyframes_at_frame(obj, data_path, current_frame)
-            remove_keyframes_at_frame(obj, data_path, end_frame)
+            # Ganti animasi lama (bukan menambah), supaya object tidak pop dua kali
+            clear_keyframes(obj, data_path)
             
             # INSERT KEYFRAMES: OUT animation (0.0 → 1.0)
-            modifier[float_socket_id] = 0.0
+            set_input(modifier, float_socket_id, 0.0)
             obj.keyframe_insert(data_path=data_path, frame=current_frame)
-            modifier[float_socket_id] = 1.0
+            set_input(modifier, float_socket_id, 1.0)
             obj.keyframe_insert(data_path=data_path, frame=end_frame)
             
             # Set interpolasi linear
@@ -517,10 +710,10 @@ class ANIMZ_OT_animate_popup(Operator):
         scene = context.scene
         animz_props = scene.animz_properties
         
-        selected_objects = [obj for obj in context.selected_objects if obj.type == 'MESH' or obj.type == 'CURVE']
+        selected_objects = get_supported_selected(context)
         
         if not selected_objects:
-            self.report({'WARNING'}, "No mesh objects selected")
+            self.report({'WARNING'}, NO_SELECTION_MESSAGE)
             return {'CANCELLED'}
         
         # === AUTO-APPEND NODE GROUP JIKA BELUM ADA ===
@@ -532,16 +725,20 @@ class ANIMZ_OT_animate_popup(Operator):
             return {'CANCELLED'}
 
         animation_type_value = int(animz_props.popup_type)
-        
+        error = check_preset_supported(node_group, find_int_socket(node_group), animation_type_value)
+        if error:
+            self.report({'ERROR'}, error)
+            return {'CANCELLED'}
+
         # Dapatkan label type untuk report
         type_label = 'Unknown'
         for item in ANIMZ_properties.popup_type_items:
             if item[0] == animz_props.popup_type:
                 type_label = item[1]
                 break
-        
+
         animated_count = 0
-        
+
         for obj in selected_objects:
             success, message = setup_popup_modifier(
                 obj, 
@@ -562,7 +759,8 @@ class ANIMZ_OT_animate_popup(Operator):
         if animated_count == 0:
             self.report({'WARNING'}, "No objects animated successfully")
             return {'CANCELLED'}
-        
+
+        report_overlaps(self, selected_objects, node_group)
         self.report({'INFO'}, f"Animated {animated_count} object(s) | Type: {type_label}")
         return {'FINISHED'}
 
@@ -575,10 +773,10 @@ class ANIMZ_OT_animate_out_popup(Operator):
     def execute(self, context):
         scene = context.scene
         animz_props = scene.animz_properties
-        selected_objects = [obj for obj in context.selected_objects if obj.type == 'MESH' or obj.type == 'CURVE']
+        selected_objects = get_supported_selected(context)
         
         if not selected_objects:
-            self.report({'WARNING'}, "No mesh objects selected")
+            self.report({'WARNING'}, NO_SELECTION_MESSAGE)
             return {'CANCELLED'}
         
         # Auto-append node group jika belum ada (sama seperti IN)
@@ -588,7 +786,11 @@ class ANIMZ_OT_animate_out_popup(Operator):
             return {'CANCELLED'}
 
         animation_type_value = int(animz_props.out_type)
-        
+        error = check_preset_supported(node_group, find_out_int_socket(node_group), animation_type_value)
+        if error:
+            self.report({'ERROR'}, error)
+            return {'CANCELLED'}
+
         # Dapatkan label type
         type_label = 'Unknown'
         for item in ANIMZ_properties.out_type_items:
@@ -611,7 +813,8 @@ class ANIMZ_OT_animate_out_popup(Operator):
         if animated_count == 0:
             self.report({'WARNING'}, "No objects animated successfully")
             return {'CANCELLED'}
-        
+
+        report_overlaps(self, selected_objects, node_group)
         self.report({'INFO'}, f"OUT Animated {animated_count} object(s) | Type: {type_label}")
         return {'FINISHED'}
 
@@ -624,10 +827,10 @@ class ANIMZ_OT_update_in_animation(Operator):
     def execute(self, context):
         scene = context.scene
         animz_props = scene.animz_properties
-        selected_objects = [obj for obj in context.selected_objects if obj.type == 'MESH' or obj.type == 'CURVE']
+        selected_objects = get_supported_selected(context)
         
         if not selected_objects:
-            self.report({'WARNING'}, "No mesh objects selected")
+            self.report({'WARNING'}, NO_SELECTION_MESSAGE)
             return {'CANCELLED'}
         
         if "auto_pop_up" not in bpy.data.node_groups:
@@ -641,6 +844,10 @@ class ANIMZ_OT_update_in_animation(Operator):
         if not int_socket_id:
             self.report({'ERROR'}, "Cannot find IN preset socket (socket_4)")
             return {'CANCELLED'}
+        error = check_preset_supported(node_group, int_socket_id, animation_type_value)
+        if error:
+            self.report({'ERROR'}, error)
+            return {'CANCELLED'}
         
         updated_count = 0
         for obj in selected_objects:
@@ -651,13 +858,13 @@ class ANIMZ_OT_update_in_animation(Operator):
                     modifier = mod
                     break
             
-            if not modifier or int_socket_id not in modifier:
+            if not modifier or not has_input(modifier, int_socket_id):
                 continue  # Skip object tanpa modifier atau socket tidak tersedia
             
             # === UPDATE NILAI SOCKET LANGSUNG (TANPA HAPUS MODIFIER) ===
             try:
                 # Set nilai baru
-                modifier[int_socket_id] = animation_type_value
+                set_input(modifier, int_socket_id, animation_type_value)
                 
                 # Force depsgraph update (KRITIS untuk viewport refresh)
                 obj.update_tag(refresh={'OBJECT'})
@@ -691,10 +898,10 @@ class ANIMZ_OT_update_out_animation(Operator):
     def execute(self, context):
         scene = context.scene
         animz_props = scene.animz_properties
-        selected_objects = [obj for obj in context.selected_objects if obj.type == 'MESH' or obj.type == 'CURVE']
+        selected_objects = get_supported_selected(context)
         
         if not selected_objects:
-            self.report({'WARNING'}, "No mesh objects selected")
+            self.report({'WARNING'}, NO_SELECTION_MESSAGE)
             return {'CANCELLED'}
         
         if "auto_pop_up" not in bpy.data.node_groups:
@@ -708,6 +915,10 @@ class ANIMZ_OT_update_out_animation(Operator):
         if not int_socket_id:
             self.report({'ERROR'}, "Cannot find OUT preset socket (socket_5)")
             return {'CANCELLED'}
+        error = check_preset_supported(node_group, int_socket_id, animation_type_value)
+        if error:
+            self.report({'ERROR'}, error)
+            return {'CANCELLED'}
         
         updated_count = 0
         for obj in selected_objects:
@@ -718,13 +929,13 @@ class ANIMZ_OT_update_out_animation(Operator):
                     modifier = mod
                     break
             
-            if not modifier or int_socket_id not in modifier:
+            if not modifier or not has_input(modifier, int_socket_id):
                 continue  # Skip object tanpa modifier atau socket tidak tersedia
             
             # === UPDATE NILAI SOCKET LANGSUNG (TANPA HAPUS MODIFIER) ===
             try:
                 # Set nilai baru
-                modifier[int_socket_id] = animation_type_value
+                set_input(modifier, int_socket_id, animation_type_value)
                 
                 # Force depsgraph update (KRITIS untuk viewport refresh - ini solusi bug Anda!)
                 obj.update_tag(refresh={'OBJECT'})
@@ -771,87 +982,60 @@ class ANIMZ_OT_delete_animation(Operator):
     )
     
     def execute(self, context):
-        selected_objects = [obj for obj in context.selected_objects if obj.type == 'MESH' or obj.type == 'CURVE']
+        selected_objects = get_supported_selected(context)
         
         if not selected_objects:
-            self.report({'WARNING'}, "No mesh objects selected")
+            self.report({'WARNING'}, NO_SELECTION_MESSAGE)
             return {'CANCELLED'}
         
         total_modifiers_removed = 0
         total_fcurves_cleaned = 0
         objects_processed = 0
-        
-        # Track apakah node group masih digunakan oleh object lain
-        node_group_still_in_use = False
-        
+        shared_skipped = []
+        node_group = bpy.data.node_groups.get(NODE_GROUP_NAME)
+
         for obj in selected_objects:
             try:
                 # === LANGKAH 1: CARI MODIFIER ===
-                modifier = None
-                for mod in obj.modifiers:
-                    if mod.type == 'NODES' and mod.node_group and mod.node_group.name == "auto_pop_up":
-                        modifier = mod
-                        break
-                
+                modifier = find_modifier(obj, node_group)
                 if not modifier:
                     continue
-                
-                modifier_name = modifier.name
-                
-                # === LANGKAH 2: HAPUS MODIFIER ===
+
+                # === LANGKAH 2: HAPUS FCURVE MILIK MODIFIER INI SAJA ===
+                # Action yang dipakai bersama object lain tidak disentuh
+                cleaned = remove_modifier_fcurves(obj, modifier.name)
+                if cleaned < 0:
+                    shared_skipped.append(obj.name)
+                else:
+                    total_fcurves_cleaned += cleaned
+
+                # === LANGKAH 3: HAPUS MODIFIER ===
                 obj.modifiers.remove(modifier)
                 total_modifiers_removed += 1
-                
-                # === LANGKAH 3: BERSIHKAN BROKEN KEYFRAMES ===
-                fcurves_cleaned = 0
-                fcurves = get_fcurves(obj)
-                if fcurves:
-                    # Iterasi mundur karena menghapus saat iterasi
-                    for i in range(len(fcurves) - 1, -1, -1):
-                        fcurve = fcurves[i]
-                        # Deteksi broken path dengan path_resolve
-                        try:
-                            obj.path_resolve(fcurve.data_path)
-                        except Exception:
-                            fcurves.remove(fcurve)
-                            fcurves_cleaned += 1
-                
-                total_fcurves_cleaned += fcurves_cleaned
                 objects_processed += 1
-                
+
             except Exception as e:
                 self.report({'WARNING'}, f"Failed to process {obj.name}: {str(e)}")
                 import traceback
                 print(traceback.format_exc())
                 continue
-        
+
+        if shared_skipped:
+            self.report({'WARNING'}, f"Keyframes kept on {len(shared_skipped)} object(s) that share their action with other objects")
+
         # === LANGKAH 4: PURGE NODE GROUP (JIKA DIPILIH & TIDAK DIGUNAKAN) ===
+        # users menghitung semua modifier di semua tipe object (Mesh, Curve, Text)
         node_group_purged = False
-        if self.purge_node_group and "auto_pop_up" in bpy.data.node_groups:
-            node_group = bpy.data.node_groups["auto_pop_up"]
-            
-            # Cek apakah masih digunakan oleh object lain di seluruh scene
-            for obj in bpy.data.objects:
-                if obj.type == 'MESH' and obj.modifiers:
-                    for mod in obj.modifiers:
-                        if mod.type == 'NODES' and mod.node_group == node_group:
-                            node_group_still_in_use = True
-                            break
-                    if node_group_still_in_use:
-                        break
-            
-            # Hapus hanya jika tidak digunakan
+        node_group_still_in_use = False
+        if self.purge_node_group and node_group is not None:
+            node_group_still_in_use = node_group_in_use(node_group)
             if not node_group_still_in_use:
-                # Pastikan tidak ada fake user
-                node_group.use_fake_user = False
-                
-                # Force removal
                 try:
                     bpy.data.node_groups.remove(node_group, do_unlink=True)
                     node_group_purged = True
                 except Exception as e:
                     self.report({'WARNING'}, f"Failed to purge node group: {e}")
-        
+
         # Force viewport update
         context.view_layer.update()
         
@@ -865,7 +1049,7 @@ class ANIMZ_OT_delete_animation(Operator):
         ]
         
         if total_fcurves_cleaned > 0:
-            report_parts.append(f"Cleaned {total_fcurves_cleaned} broken keyframe(s)")
+            report_parts.append(f"Removed {total_fcurves_cleaned} animation curve(s)")
         
         if self.purge_node_group:
             if node_group_purged:
@@ -888,6 +1072,81 @@ class ANIMZ_OT_delete_animation(Operator):
         if self.purge_node_group:
             layout.label(text="Warning: This will permanently remove", icon='ERROR')
             layout.label(text="the node group from your .blend file!", icon='ERROR')
+
+
+class ANIMZ_OT_add_wiggle(Operator):
+    """Add a looping wiggle (location, rotation, scale) to selected objects"""
+    bl_idname = "animz.add_wiggle"
+    bl_label = "Add Wiggle"
+    bl_description = ("Add a seamless looping wiggle to selected objects. Each object gets its own seed. "
+                      "Settings are copied from the active object when it already has a wiggle")
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        selected_objects = get_supported_selected(context)
+        if not selected_objects:
+            self.report({'WARNING'}, NO_SELECTION_MESSAGE)
+            return {'CANCELLED'}
+
+        wiggle_group = get_or_append_node_group(WIGGLE_NODE_GROUP_NAME)
+        if wiggle_group is None:
+            self.report({'ERROR'}, f"Template not found or has no '{WIGGLE_NODE_GROUP_NAME}' node group: {get_template_path()}")
+            return {'CANCELLED'}
+
+        active = context.active_object
+        source = find_modifier(active, wiggle_group) if active else None
+        for obj in selected_objects:
+            add_wiggle_modifier(obj, wiggle_group, source)
+        context.view_layer.update()
+        self.report({'INFO'}, f"Wiggle added to {len(selected_objects)} object(s)")
+        return {'FINISHED'}
+
+
+class ANIMZ_OT_copy_wiggle(Operator):
+    """Copy the active object's wiggle settings to the other selected objects"""
+    bl_idname = "animz.copy_wiggle"
+    bl_label = "Copy Wiggle to Selected"
+    bl_description = "Copy the active object's wiggle settings to selected objects (each keeps its own seed)"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        wiggle_group = bpy.data.node_groups.get(WIGGLE_NODE_GROUP_NAME)
+        return bool(context.active_object and find_modifier(context.active_object, wiggle_group))
+
+    def execute(self, context):
+        wiggle_group = bpy.data.node_groups[WIGGLE_NODE_GROUP_NAME]
+        source = find_modifier(context.active_object, wiggle_group)
+        targets = [obj for obj in get_supported_selected(context) if obj != context.active_object]
+        for obj in targets:
+            add_wiggle_modifier(obj, wiggle_group, source)
+        context.view_layer.update()
+        self.report({'INFO'}, f"Wiggle copied to {len(targets)} object(s)")
+        return {'FINISHED'}
+
+
+class ANIMZ_OT_remove_wiggle(Operator):
+    """Remove the wiggle modifier from selected objects"""
+    bl_idname = "animz.remove_wiggle"
+    bl_label = "Remove Wiggle"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        wiggle_group = bpy.data.node_groups.get(WIGGLE_NODE_GROUP_NAME)
+        removed = 0
+        for obj in get_supported_selected(context):
+            modifier = find_modifier(obj, wiggle_group)
+            if modifier is None:
+                continue
+            remove_modifier_fcurves(obj, modifier.name)
+            obj.modifiers.remove(modifier)
+            removed += 1
+        if removed == 0:
+            self.report({'INFO'}, "No wiggle found on selected objects")
+            return {'CANCELLED'}
+        context.view_layer.update()
+        self.report({'INFO'}, f"Wiggle removed from {removed} object(s)")
+        return {'FINISHED'}
 
 
 # =======================================================
@@ -975,7 +1234,33 @@ class ANIMZ_PT_panel(Panel):
         row = main_box.row()
         row.scale_y = 1.5
         row.operator("animz.delete_animation", text="Delete Animations", icon='TRASH')
-        
+
+        # === WIGGLE (modifier terpisah, hanya object yang bergoyang dihitung ulang tiap frame) ===
+        layout.label(text="Wiggle Loop")
+        wiggle_box = layout.box()
+        row = wiggle_box.row(align=True)
+        row.scale_y = 1.3
+        row.operator("animz.add_wiggle", text="Add Wiggle", icon='FORCE_TURBULENCE')
+        row.operator("animz.copy_wiggle", text="", icon='COPYDOWN')
+        row.operator("animz.remove_wiggle", text="", icon='X')
+
+        wiggle_group = bpy.data.node_groups.get(WIGGLE_NODE_GROUP_NAME)
+        active = context.active_object
+        wiggle_mod = find_modifier(active, wiggle_group) if active else None
+        if wiggle_mod is not None:
+            wiggle_box.label(text=f"Active: {active.name}", icon='OBJECT_DATA')
+            col = wiggle_box.column(align=True)
+            for item in wiggle_group.interface.items_tree:
+                if (item.item_type == 'SOCKET' and item.in_out == 'INPUT' and
+                        item.socket_type != 'NodeSocketGeometry' and has_input(wiggle_mod, item.identifier)):
+                    if item.socket_type == 'NodeSocketVector':
+                        col.label(text=f"{item.name}:")
+                        draw_input(col.row(align=True), wiggle_mod, item.identifier, text="")
+                    else:
+                        draw_input(col, wiggle_mod, item.identifier, text=item.name)
+        elif wiggle_group is not None:
+            wiggle_box.label(text="Active object has no wiggle", icon='INFO')
+
         # Selected objects count
         layout.label(text=f"Selected Objects: {len(context.selected_objects)}")
         
@@ -1066,6 +1351,9 @@ classes = (
     ANIMZ_OT_update_in_animation,
     ANIMZ_OT_update_out_animation,
     ANIMZ_OT_delete_animation,
+    ANIMZ_OT_add_wiggle,
+    ANIMZ_OT_copy_wiggle,
+    ANIMZ_OT_remove_wiggle,
     ANIMZ_PT_panel,
 )
 

@@ -55,22 +55,43 @@ Hidden by default. Enable it in preferences.
 
 ### AnimZ
 
-Procedural pop-up animation for any selected objects, driven by the `auto_pop_up` Geometry Nodes group shipped in `fileset/template/auto_pop_up.blend`. The node group is appended automatically the first time you animate.
+Procedural pop-up and wiggle animation for selected Mesh, Curve and Text objects, driven by Geometry Nodes groups shipped in `fileset/template/auto_pop_up.blend`. The node groups are appended automatically the first time you use them.
 
 - **In Animation**: pick a type, set the duration in frames, then press **Animate In**. Types: Ease Out, Ease In Out, Bounce, Jump & Bounce, Jump Rotate & Bounce, Slide Elastic (down), Slide Ease Out (up, down, right, left), Rotate & Back, Bounce & Swing X.
 - **Out Animation**: same controls with **Animate Out**. Types: Ease In, Ease In Out, Back, Jump & Bounce, Jump Rotate & Bounce, X-Axis Scale, Slide Ease Out (up, down, right, left), Rotate & Back.
+- Animating again replaces the previous In (or Out) keyframes. AnimZ warns when an Out starts before the In has finished.
 - **Refresh** button next to each type: changes the animation type on existing objects and keeps the keyframes.
-- **Delete Animations**: removes the `auto_pop_up` modifier from the selected objects, with an option to purge the node group from the file.
+- **Delete Animations**: removes the `auto_pop_up` modifier and its keyframes from the selected objects. Other animation is left alone, and keyframes in an action shared with other objects are kept. **Purge Node Group** removes the node group only when no object uses it any more.
 
 The full preset reference is in `fileset/template/Presets.md`.
 
-Notes on the node group:
+#### Wiggle Loop
+
+A seamless looping wiggle on location, rotation and scale, as a separate `auto_wiggle` modifier. Only objects with a wiggle are recalculated every frame, so pop-up animation stays fast on heavy objects.
+
+- **Add Wiggle**: adds the wiggle to the selected objects, each with its own random seed. When the active object already has a wiggle, its settings are copied.
+- **Copy** (arrow icon): copies the active object's wiggle settings to the other selected objects. Each object keeps its own seed.
+- **Remove** (X icon): removes the wiggle and its keyframes from the selected objects.
+- The active object's settings are shown in the panel:
+
+| Setting | What it does |
+|---|---|
+| Strength | Master amount, 0 to 1. Keyframe it to fade the wiggle in or out |
+| Loop Duration | Seconds until the motion repeats exactly |
+| Randomness | 0 = smooth regular sway, higher = more irregular motion |
+| Location | Max offset per axis, times the object's largest side |
+| Rotation | Max rotation per axis |
+| Scale | Max scale change per axis (0.05 = 5%) |
+| Uniform Scale | Off: axes scale independently (squash and stretch) |
+| Seed | Different motion per object |
+
+Notes on the node groups:
 
 - Keyframes on the `In` / `Out` sockets are set to Linear. The easing comes from the Float Curves inside each preset.
 - Rotation is the same for every object size. Translate scales with the object's largest side, so flat objects still move.
 - `In Power` / `Out Power` (0 to 10, default 0.5) set the strength of translate and rotate. At 0.5 a 2 m cube moves exactly as the preset was designed.
-- Wiggle sockets: `Amplitude` (height), `Speed`, `Rotation Amplitude`, `Rotation Speed`, `Offset`. AnimZ gives each new object a random `Offset`, so objects do not wiggle in sync.
-- The template node group carries a version number (`animz_version`). When a .blend file has an older `auto_pop_up`, the AnimZ panel shows a warning with an **Upgrade Node Group** button. Upgrading keeps modifiers and keyframes, but the motion of existing objects may change, so it asks for confirmation first.
+- The template node group carries a version number (`animz_version`, currently 3). When a .blend file has an older `auto_pop_up`, the AnimZ panel shows a warning with an **Upgrade Node Group** button. Upgrading keeps modifiers and keyframes, but the motion of existing objects may change, so it asks for confirmation first. Objects that used the old built-in Wiggle get the new Wiggle modifier with default settings.
+- Presets newer than the file's node group are blocked until you upgrade.
 
 ### Zeus Pack Assistant
 
@@ -120,7 +141,7 @@ ZeusLab/
 │   ├── simpletake.py      # Simple Take (Child Of attach/detach)
 │   └── bonver_operator.py # Mixamo Rig to Bones
 ├── fileset/
-│   ├── animz_tools.py     # AnimZ pop-up animation
+│   ├── animz_tools.py     # AnimZ pop-up and wiggle animation
 │   ├── pack_exporter.py   # Pack profile, render and append operators
 │   ├── playblast_operator.py # Playblast split-screen export
 │   ├── fileset_panel.py   # Zeus Pack Assistant panels
@@ -150,11 +171,33 @@ These items are left out of the zip:
 
 ## Releasing an Update
 
-1. Bump `"version"` in `bl_info` (`__init__.py`), `version.json` and `package.json`.
-2. Update the `changelog` in `version.json`.
-3. Run `npm run package`.
-4. Upload the zip and set its direct download link as `download_url` in `version.json`.
-5. Upload the new `version.json` to the location in `updater/updater.py` (`version_url`).
+Requires the [GitHub CLI](https://cli.github.com/) (`gh auth login`) with push access to the repo.
+
+1. Commit all changes on `main`.
+2. Preview the release first. This changes nothing:
+
+   ```bash
+   npm run release -- patch --dry-run
+   ```
+
+3. Run the release. Use `patch`, `minor`, `major` or an exact version such as `2.0.0`:
+
+   ```bash
+   npm run release -- minor --notes "1. New Wiggle Loop\n2. Bug fixes"
+   ```
+
+4. Upload the new `version.json` to the location in `updater/updater.py` (`version_url`), so installed addons see the update.
+
+The release script does these steps:
+
+- Checks that you are on `main`, the working tree is clean, `main` is not behind `origin`, and the tag is free.
+- Writes the new version to `bl_info` (`__init__.py`), `version.json` and `package.json`.
+- In `version.json`, sets `changelog` and points `download_url` to the zip on the GitHub release.
+- Builds the zip with `npm run package`.
+- Commits `chore(release): v<version>`, creates tag `v<version>` and pushes both.
+- Creates the GitHub release with the zip attached.
+
+Without `--notes`, the changelog is the list of commit subjects since the last tag.
 
 ## License
 
