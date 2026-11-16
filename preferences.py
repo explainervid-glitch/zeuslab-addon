@@ -41,11 +41,6 @@ class ZeusLabAddonPreferences(AddonPreferences):
         description="Tampilkan/sembunyikan panel Zeus Pack Assistant",
         default=False
     )
-    show_style_render_panel: BoolProperty(
-        name="3D Explainer Style",
-        description="Tampilkan/sembunyikan panel 3D Explainer Style Render",
-        default=False
-    )
     show_animz_panel: BoolProperty(
         name="Animz™",
         description="Tampilkan/sembunyikan panel Animz™",

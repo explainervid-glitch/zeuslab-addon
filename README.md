@@ -1,6 +1,6 @@
 # ZeusLab
 
-ZeusLab is a Blender addon that bundles the animation tools used in Zeus's production workflow. It covers bone snapping, prop attach/detach, Mixamo rig baking, procedural pop-up animation, render style presets, and pack/playblast export.
+ZeusLab is a Blender addon that bundles the animation tools used in Zeus's production workflow. It covers bone snapping, prop attach/detach, Mixamo rig baking, procedural pop-up animation, and pack/playblast export.
 
 | | |
 |---|---|
@@ -57,18 +57,20 @@ Hidden by default. Enable it in preferences.
 
 Procedural pop-up animation for any selected objects, driven by the `auto_pop_up` Geometry Nodes group shipped in `fileset/template/auto_pop_up.blend`. The node group is appended automatically the first time you animate.
 
-- **In Animation**: pick a type, set the duration in frames, then press **Animate In**. Types: Ease Out, Ease In Out, Bounce, Jump & Bounce, Jump Rotate & Bounce, Slide Elastic (down), Slide Ease Out (up, down, right, left), Rotate & Back.
+- **In Animation**: pick a type, set the duration in frames, then press **Animate In**. Types: Ease Out, Ease In Out, Bounce, Jump & Bounce, Jump Rotate & Bounce, Slide Elastic (down), Slide Ease Out (up, down, right, left), Rotate & Back, Bounce & Swing X.
 - **Out Animation**: same controls with **Animate Out**. Types: Ease In, Ease In Out, Back, Jump & Bounce, Jump Rotate & Bounce, X-Axis Scale, Slide Ease Out (up, down, right, left), Rotate & Back.
 - **Refresh** button next to each type: changes the animation type on existing objects and keeps the keyframes.
 - **Delete Animations**: removes the `auto_pop_up` modifier from the selected objects, with an option to purge the node group from the file.
 
 The full preset reference is in `fileset/template/Presets.md`.
 
-### 3D Explainer Style
+Notes on the node group:
 
-One-click render settings for each 3D Explainer style: **18, 19, 20** (Isometric), **21** (Isometric), **22** (No Face) and **23** (Realist). Each button sets the render engine, Cycles GPU device (OptiX or CUDA), sampling, resolution and output format for that style.
-
-Hidden by default. Enable it in preferences.
+- Keyframes on the `In` / `Out` sockets are set to Linear. The easing comes from the Float Curves inside each preset.
+- Rotation is the same for every object size. Translate scales with the object's largest side, so flat objects still move.
+- `In Power` / `Out Power` (0 to 10, default 0.5) set the strength of translate and rotate. At 0.5 a 2 m cube moves exactly as the preset was designed.
+- Wiggle sockets: `Amplitude` (height), `Speed`, `Rotation Amplitude`, `Rotation Speed`, `Offset`. AnimZ gives each new object a random `Offset`, so objects do not wiggle in sync.
+- The template node group carries a version number (`animz_version`). When a .blend file has an older `auto_pop_up`, the AnimZ panel shows a warning with an **Upgrade Node Group** button. Upgrading keeps modifiers and keyframes, but the motion of existing objects may change, so it asks for confirmation first.
 
 ### Zeus Pack Assistant
 
@@ -104,7 +106,6 @@ Open **Edit > Preferences > Add-ons > ZeusLab**. There are two tabs:
 | AnimZ | Shown |
 | Mixamo Rig to Bones | Hidden |
 | Zeus Pack Assistant | Hidden |
-| 3D Explainer Style | Hidden |
 
 ## Project Structure
 
@@ -120,7 +121,6 @@ ZeusLab/
 │   └── bonver_operator.py # Mixamo Rig to Bones
 ├── fileset/
 │   ├── animz_tools.py     # AnimZ pop-up animation
-│   ├── style_setting.py   # 3D Explainer style render presets
 │   ├── pack_exporter.py   # Pack profile, render and append operators
 │   ├── playblast_operator.py # Playblast split-screen export
 │   ├── fileset_panel.py   # Zeus Pack Assistant panels

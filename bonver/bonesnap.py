@@ -9,49 +9,6 @@ def update_follow_rotation(self, context):
 def update_add_constraints(self, context):
     pass # Placeholder jika nanti butuh callback
 
-bpy.types.Scene.bone_tool_follow_rotation = bpy.props.BoolProperty(
-    name="Follow Bone Rotation",
-    description="Make the empty follow the rotation of the selected bone",
-    default=True,
-    update=update_follow_rotation
-)
-
-bpy.types.Scene.bone_tool_add_constraints = bpy.props.BoolProperty(
-    name="Add Constraints",
-    description="Add Copy Location and Copy Rotation constraints to the selected bone targeting the new empty",
-    default=True,
-    update=update_add_constraints
-)
-
-# Properti baru untuk offset keyframe
-bpy.types.Scene.bone_tool_keyframe_offset = bpy.props.IntProperty(
-    name="Snap Smoothness",
-    description="Number of frames before current frame to place the initial keyframe for snap",
-    default=1,
-    min=1,
-    max=10,  # Tidak bisa negatif
-    update=lambda self, context: None # Placeholder update
-)
-
-# Properti baru untuk offset keyframe unsnap
-bpy.types.Scene.bone_tool_unsnap_offset = bpy.props.IntProperty(
-    name="Unsnap Smoothness",
-    description="Number of frames after current frame to place the final keyframe for unsnap",
-    default=5,
-    min=1,
-    max=10,  # Tidak bisa negatif
-    update=lambda self, context: None # Placeholder update
-)
-
-bpy.types.Scene.tweak_pose_set_inverse = bpy.props.BoolProperty(
-    name="Set Inverse",
-    description="Set inverse for the Child Of constraint",
-    default=False
-)
-
-bpy.types.Scene.is_update_prepared = bpy.props.BoolProperty(default=False)
-bpy.types.Scene.temp_target_empty_name = bpy.props.StringProperty()
-
 empty_types = [
     ('ARROWS', 'Arrows', 'Arrow-shaped empty'),
     ('CUBE', 'Cube', 'Cube-shaped empty'),
@@ -62,12 +19,77 @@ empty_types = [
     ('IMAGE', 'Image', 'Image plane empty'),
 ]
 
-bpy.types.Scene.spawn_empty_type = bpy.props.EnumProperty(
-    name="Empty Type",
-    description="Choose the type of empty to spawn",
-    items=empty_types, # Gunakan tuple yang didefinisikan di atas
-    default='ARROWS'   # Nilai awal
+
+def register_properties():
+    """Scene properties dibuat di register() supaya disable/enable addon tidak merusak panel"""
+    bpy.types.Scene.bone_tool_follow_rotation = bpy.props.BoolProperty(
+        name="Follow Bone Rotation",
+        description="Make the empty follow the rotation of the selected bone",
+        default=True,
+        update=update_follow_rotation
+    )
+
+    bpy.types.Scene.bone_tool_add_constraints = bpy.props.BoolProperty(
+        name="Add Constraints",
+        description="Add Copy Location and Copy Rotation constraints to the selected bone targeting the new empty",
+        default=True,
+        update=update_add_constraints
+    )
+
+    # Properti baru untuk offset keyframe
+    bpy.types.Scene.bone_tool_keyframe_offset = bpy.props.IntProperty(
+        name="Snap Smoothness",
+        description="Number of frames before current frame to place the initial keyframe for snap",
+        default=1,
+        min=1,
+        max=10,  # Tidak bisa negatif
+        update=lambda self, context: None # Placeholder update
+    )
+
+    # Properti baru untuk offset keyframe unsnap
+    bpy.types.Scene.bone_tool_unsnap_offset = bpy.props.IntProperty(
+        name="Unsnap Smoothness",
+        description="Number of frames after current frame to place the final keyframe for unsnap",
+        default=5,
+        min=1,
+        max=10,  # Tidak bisa negatif
+        update=lambda self, context: None # Placeholder update
+    )
+
+    bpy.types.Scene.tweak_pose_set_inverse = bpy.props.BoolProperty(
+        name="Set Inverse",
+        description="Set inverse for the Child Of constraint",
+        default=False
+    )
+
+    bpy.types.Scene.is_update_prepared = bpy.props.BoolProperty(default=False)
+    bpy.types.Scene.temp_target_empty_name = bpy.props.StringProperty()
+
+    bpy.types.Scene.spawn_empty_type = bpy.props.EnumProperty(
+        name="Empty Type",
+        description="Choose the type of empty to spawn",
+        items=empty_types, # Gunakan tuple yang didefinisikan di atas
+        default='ARROWS'   # Nilai awal
+    )
+
+
+SCENE_PROPERTIES = (
+    "bone_tool_follow_rotation",
+    "bone_tool_add_constraints",
+    "bone_tool_keyframe_offset",
+    "bone_tool_unsnap_offset",
+    "tweak_pose_set_inverse",
+    "is_update_prepared",
+    "temp_target_empty_name",
+    "spawn_empty_type",
 )
+
+
+def unregister_properties():
+    for name in SCENE_PROPERTIES:
+        if hasattr(bpy.types.Scene, name):
+            delattr(bpy.types.Scene, name)
+
 
 class POSE_OT_add_empty_to_bone(bpy.types.Operator):
     """Add Empty Arrow to selected bone position with optional rotation and add constraints"""
@@ -846,17 +868,11 @@ classes = (
 )
 
 def register():
+    register_properties()
     for cls in classes:
         bpy.utils.register_class(cls)
 
 def unregister():
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
-    # Unregister the scene properties
-    del bpy.types.Scene.bone_tool_follow_rotation
-    del bpy.types.Scene.bone_tool_add_constraints
-    del bpy.types.Scene.bone_tool_keyframe_offset
-    del bpy.types.Scene.bone_tool_unsnap_offset
-    del bpy.types.Scene.tweak_pose_set_inverse
-    del bpy.types.Scene.is_update_prepared
-    del bpy.types.Scene.temp_target_empty_name
+    unregister_properties()

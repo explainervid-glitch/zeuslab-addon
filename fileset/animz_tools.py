@@ -1,12 +1,156 @@
 import bpy
 from bpy.types import Panel, Operator, PropertyGroup
 from bpy.props import IntProperty, EnumProperty
+from bpy_extras import anim_utils
 from ..preferences import get_addon_preferences
 import os
+import random
+import re
+
+NODE_GROUP_NAME = "auto_pop_up"
+# Harus sama dengan custom property "animz_version" pada node group di template/auto_pop_up.blend
+TEMPLATE_VERSION = 2
 
 # =======================================================
 # Function
 # =======================================================
+
+def get_fcurves(obj):
+    """
+    Ambil fcurves object, kompatibel Blender 4.x (action.fcurves) dan
+    Blender 5.0+ (layered action / channelbag, action.fcurves sudah dihapus).
+    """
+    anim = obj.animation_data
+    if not anim or not anim.action:
+        return None
+    action = anim.action
+    if hasattr(action, 'fcurves'):
+        return action.fcurves
+    slot = getattr(anim, 'action_slot', None)
+    if slot is None:
+        return None
+    channelbag = anim_utils.action_get_channelbag_for_slot(action, slot)
+    return channelbag.fcurves if channelbag else None
+
+
+def set_fcurve_linear(obj, data_path):
+    """Set interpolasi LINEAR, easing sudah diatur oleh Float Curve di preset"""
+    fcurves = get_fcurves(obj)
+    if not fcurves:
+        return
+    for fcurve in fcurves:
+        if fcurve.data_path == data_path:
+            for kp in fcurve.keyframe_points:
+                kp.interpolation = 'LINEAR'
+            fcurve.update()
+            break
+
+
+def find_socket_by_name(node_group, name, socket_type):
+    """Cari identifier input socket berdasarkan nama dan tipe"""
+    for item in node_group.interface.items_tree:
+        if (item.item_type == 'SOCKET' and
+            item.in_out == 'INPUT' and
+            item.socket_type == socket_type and
+            item.name == name):
+            return item.identifier
+    return None
+
+
+def randomize_wiggle_offset(node_group, modifier):
+    """Offset wiggle acak per object supaya object tidak bergoyang serempak"""
+    offset_id = find_socket_by_name(node_group, "Offset", 'NodeSocketFloat')
+    if offset_id and offset_id in modifier:
+        modifier[offset_id] = random.uniform(0.0, 100.0)
+
+
+def get_node_group_version(node_group):
+    """Versi template node group. Template lama belum punya penanda versi (= 1)"""
+    return int(node_group.get("animz_version", 1))
+
+
+def get_template_path():
+    """Path template auto_pop_up.blend di folder addon"""
+    addon_path = os.path.dirname(os.path.realpath(__file__))
+    template_file = os.path.join(addon_path, "template", "auto_pop_up.blend")
+    if not os.path.exists(template_file):
+        # Alternatif: file .blend di root folder fileset
+        alt_template = os.path.join(addon_path, "auto_pop_up.blend")
+        if os.path.exists(alt_template):
+            return alt_template
+    return template_file
+
+
+def append_template_node_group():
+    """
+    Append node group dari template. Bila nama sudah dipakai, Blender memberi
+    akhiran .001, nilai return selalu node group hasil append.
+    """
+    template_file = get_template_path()
+    if not os.path.exists(template_file):
+        return None
+    with bpy.data.libraries.load(template_file, link=False) as (data_from, data_to):
+        if NODE_GROUP_NAME not in data_from.node_groups:
+            return None
+        data_to.node_groups = [NODE_GROUP_NAME]
+    node_group = data_to.node_groups[0] if data_to.node_groups else None
+    if node_group:
+        node_group.use_fake_user = False
+    return node_group
+
+
+def collect_nested_groups(node_group, found=None):
+    """Semua node group di dalam node_group (rekursif)"""
+    if found is None:
+        found = set()
+    for node in node_group.nodes:
+        tree = getattr(node, 'node_tree', None)
+        if tree and tree not in found:
+            found.add(tree)
+            collect_nested_groups(tree, found)
+    return found
+
+
+def get_or_append_node_group():
+    """Pakai node group yang sudah ada di file, append dari template bila belum ada"""
+    node_group = bpy.data.node_groups.get(NODE_GROUP_NAME)
+    if node_group:
+        return node_group
+    node_group = append_template_node_group()
+    if node_group:
+        node_group.name = NODE_GROUP_NAME
+    return node_group
+
+
+def upgrade_node_group():
+    """
+    Ganti node group lama dengan versi template terbaru. Modifier dan keyframe
+    tetap terhubung karena identifier socket tidak berubah.
+    Returns: (success: bool, message: str)
+    """
+    old = bpy.data.node_groups.get(NODE_GROUP_NAME)
+    new = append_template_node_group()
+    if new is None:
+        return (False, f"Template not found: {get_template_path()}")
+    if old is None:
+        new.name = NODE_GROUP_NAME
+        return (True, f"Appended node group v{TEMPLATE_VERSION}")
+
+    old_version = get_node_group_version(old)
+    old_subgroups = collect_nested_groups(old)
+    old.user_remap(new)
+    bpy.data.node_groups.remove(old)
+    for sub in old_subgroups:
+        if sub.users == 0:
+            bpy.data.node_groups.remove(sub)
+
+    # Kembalikan nama asli (tanpa akhiran .001)
+    new.name = NODE_GROUP_NAME
+    for sub in collect_nested_groups(new):
+        base = re.sub(r"\.\d{3}$", "", sub.name)
+        if base != sub.name and base not in bpy.data.node_groups:
+            sub.name = base
+    return (True, f"Upgraded node group v{old_version} -> v{TEMPLATE_VERSION}")
 
 def find_float_socket(node_group):
     """
@@ -41,12 +185,12 @@ def find_int_socket(node_group):
     if not node_group or not hasattr(node_group, 'interface'):
         return None
     
-    # Prioritaskan socket dengan nama "Type" bertipe integer
+    # Prioritaskan socket "In Presets" (template sekarang) atau "Type" (template lama)
     for item in node_group.interface.items_tree:
-        if (item.item_type == 'SOCKET' and 
+        if (item.item_type == 'SOCKET' and
             item.in_out == 'INPUT' and
             item.socket_type == 'NodeSocketInt'):
-            if item.name == "Type":
+            if item.name in ("In Presets", "Type"):
                 return item.identifier
     
     # Fallback: ambil socket integer input pertama
@@ -61,20 +205,16 @@ def find_int_socket(node_group):
 
 def remove_keyframes_at_frame(obj, data_path, frame):
     """Hapus keyframe existing di frame tertentu untuk mencegah duplikasi"""
-    if not obj.animation_data or not obj.animation_data.action:
+    fcurves = get_fcurves(obj)
+    if not fcurves:
         return
-    
-    action = obj.animation_data.action
-    # Akses fcurves dengan pengecekan aman
-    if not hasattr(action, 'fcurves'):
-        return
-    
-    for fcurve in action.fcurves:
+
+    for fcurve in fcurves:
         if fcurve.data_path == data_path:
             # Hapus dari belakang untuk menghindari index shift
             for i in range(len(fcurve.keyframe_points) - 1, -1, -1):
                 if abs(fcurve.keyframe_points[i].co.x - frame) < 0.01:  # Toleransi floating point
-                    fcurve.keyframe_points.remove(i, fast=True)
+                    fcurve.keyframe_points.remove(fcurve.keyframe_points[i], fast=True)
             fcurve.update()
             break
 
@@ -111,7 +251,8 @@ def setup_popup_modifier(obj, context, node_group, animation_type_value, add_key
         if modifier is None:
             modifier = obj.modifiers.new(name="auto_pop_up", type='NODES')
             modifier.node_group = node_group
-        
+            randomize_wiggle_offset(node_group, modifier)
+
         # === 2. PINDAHKAN MODIFIER KE INDEX 0 ===
         mod_index = obj.modifiers.find(modifier.name)
         if mod_index > 0:
@@ -154,15 +295,7 @@ def setup_popup_modifier(obj, context, node_group, animation_type_value, add_key
             obj.keyframe_insert(data_path=data_path, frame=end_frame)
             
             # Set interpolasi linear
-            if obj.animation_data and obj.animation_data.action:
-                action = obj.animation_data.action
-                if hasattr(action, 'fcurves'):
-                    for fcurve in action.fcurves:
-                        if fcurve.data_path == data_path:
-                            for kp in fcurve.keyframe_points:
-                                kp.interpolation = 'LINEAR'
-                            fcurve.update()
-                            break
+            set_fcurve_linear(obj, data_path)
         
         return (True, "Success")
         
@@ -242,7 +375,8 @@ def setup_popup_out_modifier(obj, context, node_group, animation_type_value, add
         if modifier is None:
             modifier = obj.modifiers.new(name="auto_pop_up", type='NODES')
             modifier.node_group = node_group
-        
+            randomize_wiggle_offset(node_group, modifier)
+
         # === 2. PINDAH KE INDEX 0 (sama seperti IN) ===
         mod_index = obj.modifiers.find(modifier.name)
         if mod_index > 0:
@@ -263,7 +397,7 @@ def setup_popup_out_modifier(obj, context, node_group, animation_type_value, add
                 # Metode paling reliable di Blender 5.x:
                 if hasattr(modifier, "node_group"):
                     # Trigger recompile node tree
-                    modifier.node_group.interface_update()
+                    modifier.node_group.interface_update(context)
                 
             except Exception as e:
                 print(f"Warning: Failed to set OUT preset on {obj.name}: {e}")
@@ -293,20 +427,15 @@ def setup_popup_out_modifier(obj, context, node_group, animation_type_value, add
             obj.keyframe_insert(data_path=data_path, frame=end_frame)
             
             # Set interpolasi linear
-            if obj.animation_data and obj.animation_data.action:
-                action = obj.animation_data.action
-                if hasattr(action, 'fcurves'):
-                    for fcurve in action.fcurves:
-                        if fcurve.data_path == data_path:
-                            for kp in fcurve.keyframe_points:
-                                kp.interpolation = 'LINEAR'
-                            fcurve.update()
-                            break
+            set_fcurve_linear(obj, data_path)
         
         # === 5. FINAL VIEWPORT UPDATE (PENTING!) ===
         context.view_layer.update()
-        # Force redraw viewport (opsional tapi efektif)
-        bpy.ops.wm.redraw_timer(type='DRAW_WIN_SWAP', iterations=1)
+        # Force redraw viewport (opsional, gagal bila tidak ada window)
+        try:
+            bpy.ops.wm.redraw_timer(type='DRAW_WIN_SWAP', iterations=1)
+        except RuntimeError:
+            pass
         
         return (True, "Success")
     
@@ -327,75 +456,56 @@ class ANIMZ_OT_append_node(Operator):
     bl_options = {'REGISTER', 'UNDO'}
     
     def execute(self, context):
-        # Dapatkan path addon (handle kasus di Text Editor vs installed addon)
-        if __file__.endswith("<string>"):
-            # Jika dijalankan dari Text Editor, gunakan path file .blend aktif
-            addon_path = os.path.dirname(bpy.data.filepath)
-        else:
-            addon_path = os.path.dirname(os.path.realpath(__file__))
-        
-        # Path ke file template yang berisi node group
-        template_dir = os.path.join(addon_path, "template")
-        template_file = os.path.join(template_dir, "auto_pop_up.blend")
-        
-        # Validasi keberadaan direktori template
-        if not os.path.exists(template_dir):
-            self.report({'ERROR'}, f"Template directory not found:\n{template_dir}")
-            return {'CANCELLED'}
-        
-        # Validasi keberadaan file .blend
-        if not os.path.exists(template_file):
-            # Cari alternatif: file .blend di root addon jika tidak ada di /template
-            alt_template = os.path.join(addon_path, "auto_pop_up.blend")
-            if os.path.exists(alt_template):
-                template_file = alt_template
-                self.report({'INFO'}, f"Using alternative template path:\n{alt_template}")
-            else:
-                self.report({'ERROR'}, f"Template file not found:\n{template_file}\n\nPlease ensure 'auto_pop_up.blend' exists in:\n{template_dir}")
-                return {'CANCELLED'}
-        
-        # Cek apakah node group sudah ada
-        node_group_name = "auto_pop_up"
-        if node_group_name in bpy.data.node_groups:
-            self.report({'INFO'}, f"Node group '{node_group_name}' already exists in file")
+        existing = bpy.data.node_groups.get(NODE_GROUP_NAME)
+        if existing:
+            self.report({'INFO'}, f"Node group '{NODE_GROUP_NAME}' already exists in file (v{get_node_group_version(existing)})")
             return {'FINISHED'}
-        
-        # Lakukan append node group
+
         try:
-            # Inner path untuk Node Group di Blender
-            inner_path = "NodeTree"
-            
-            # Append dengan bpy.ops.wm.append
-            bpy.ops.wm.append(
-                filepath=os.path.join(template_file, inner_path, node_group_name),
-                directory=os.path.join(template_file, inner_path),
-                filename=node_group_name,
-                set_fake=False,  # Penting: mencegah node group terhapus saat save
-                link=False       # Pastikan di-append (bukan di-link)
-            )
-            
-            # Validasi hasil append
-            if node_group_name in bpy.data.node_groups:
-                node_group = bpy.data.node_groups[node_group_name]
-                # Pastikan ini Geometry Node Group
-                if node_group.type == 'GEOMETRY':
-                    self.report({'INFO'}, f"✓ Successfully appended '{node_group_name}' geometry node group")
-                    # Tambahkan fake user untuk mencegah auto-delete
-                    node_group.use_fake_user = False
-                    return {'FINISHED'}
-                else:
-                    self.report({'WARNING'}, f"Appended node group '{node_group_name}' is not a Geometry Node type (type: {node_group.type})")
-                    return {'CANCELLED'}
-            else:
-                self.report({'ERROR'}, f"Node group '{node_group_name}' not found after append attempt")
-                return {'CANCELLED'}
-                
+            node_group = get_or_append_node_group()
         except Exception as e:
             import traceback
-            self.report({'ERROR'}, f"Failed to append node group:\n{str(e)}")
-            print("Append error traceback:")
             traceback.print_exc()
+            self.report({'ERROR'}, f"Failed to append node group: {e}")
             return {'CANCELLED'}
+
+        if node_group is None:
+            self.report({'ERROR'}, f"Template not found or has no '{NODE_GROUP_NAME}' node group: {get_template_path()}")
+            return {'CANCELLED'}
+        if node_group.type != 'GEOMETRY':
+            self.report({'WARNING'}, f"Appended node group '{NODE_GROUP_NAME}' is not a Geometry Node type (type: {node_group.type})")
+            return {'CANCELLED'}
+
+        self.report({'INFO'}, f"✓ Successfully appended '{NODE_GROUP_NAME}' geometry node group")
+        return {'FINISHED'}
+
+
+class ANIMZ_OT_upgrade_node_group(Operator):
+    """Replace the auto_pop_up node group in this file with the latest template"""
+    bl_idname = "animz.upgrade_node_group"
+    bl_label = "Upgrade Node Group"
+    bl_description = ("Replace the outdated auto_pop_up node group with the latest template. "
+                      "Existing modifiers and keyframes are kept, but their motion may change")
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_confirm(self, event)
+
+    def execute(self, context):
+        try:
+            success, message = upgrade_node_group()
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            success, message = False, str(e)
+        if not success:
+            self.report({'ERROR'}, message)
+            return {'CANCELLED'}
+        for obj in context.scene.objects:
+            obj.update_tag()
+        context.view_layer.update()
+        self.report({'INFO'}, message)
+        return {'FINISHED'}
 
 class ANIMZ_OT_animate_popup(Operator):
     """Animate auto_pop_up geometry node on selected objects (auto-append if missing)"""
@@ -414,23 +524,13 @@ class ANIMZ_OT_animate_popup(Operator):
             return {'CANCELLED'}
         
         # === AUTO-APPEND NODE GROUP JIKA BELUM ADA ===
-        if "auto_pop_up" not in bpy.data.node_groups:
-            self.report({'INFO'}, "Node group 'auto_pop_up' not found. Attempting auto-append...")
-            
-            # Panggil operator append
-            append_result = bpy.ops.animz.append_node()
-            
-            # Validasi hasil append
-            if append_result != {'FINISHED'} or "auto_pop_up" not in bpy.data.node_groups:
-                self.report({'ERROR'}, "Failed to append 'auto_pop_up' node group. Please check:\n"
-                                      "1. Template file exists in addon's 'template/' folder\n"
-                                      "2. Node group named 'auto_pop_up' exists in template file")
-                return {'CANCELLED'}
-            
-            self.report({'INFO'}, "✓ Successfully appended 'auto_pop_up' node group")
-        
-        # Lanjutkan proses animasi setelah node group tersedia
-        node_group = bpy.data.node_groups["auto_pop_up"]
+        node_group = get_or_append_node_group()
+        if node_group is None:
+            self.report({'ERROR'}, "Failed to append 'auto_pop_up' node group. Please check:\n"
+                                  "1. Template file exists in addon's 'template/' folder\n"
+                                  "2. Node group named 'auto_pop_up' exists in template file")
+            return {'CANCELLED'}
+
         animation_type_value = int(animz_props.popup_type)
         
         # Dapatkan label type untuk report
@@ -482,13 +582,11 @@ class ANIMZ_OT_animate_out_popup(Operator):
             return {'CANCELLED'}
         
         # Auto-append node group jika belum ada (sama seperti IN)
-        if "auto_pop_up" not in bpy.data.node_groups:
-            append_result = bpy.ops.animz.append_node()
-            if append_result != {'FINISHED'} or "auto_pop_up" not in bpy.data.node_groups:
-                self.report({'ERROR'}, "Failed to append node group")
-                return {'CANCELLED'}
-        
-        node_group = bpy.data.node_groups["auto_pop_up"]
+        node_group = get_or_append_node_group()
+        if node_group is None:
+            self.report({'ERROR'}, "Failed to append node group")
+            return {'CANCELLED'}
+
         animation_type_value = int(animz_props.out_type)
         
         # Dapatkan label type
@@ -636,7 +734,10 @@ class ANIMZ_OT_update_out_animation(Operator):
                     bpy.context.view_layer.depsgraph.update()
                 
                 # Force viewport redraw (untuk immediate visual feedback)
-                bpy.ops.wm.redraw_timer(type='DRAW_WIN_SWAP', iterations=1)
+                try:
+                    bpy.ops.wm.redraw_timer(type='DRAW_WIN_SWAP', iterations=1)
+                except RuntimeError:
+                    pass
                 
                 updated_count += 1
             except Exception as e:
@@ -703,22 +804,17 @@ class ANIMZ_OT_delete_animation(Operator):
                 
                 # === LANGKAH 3: BERSIHKAN BROKEN KEYFRAMES ===
                 fcurves_cleaned = 0
-                if obj.animation_data and obj.animation_data.action:
-                    action = obj.animation_data.action
-                    if hasattr(action, 'fcurves'):
-                        # Iterasi mundur karena menghapus saat iterasi
-                        for i in range(len(action.fcurves) - 1, -1, -1):
-                            fcurve = action.fcurves[i]
-                            # Deteksi broken path dengan path_resolve
-                            try:
-                                obj.path_resolve(fcurve.data_path)
-                            except (KeyError, AttributeError, ValueError):
-                                action.fcurves.remove(fcurve)
-                                fcurves_cleaned += 1
-                            except Exception:
-                                # Safety net untuk error tak terduga
-                                action.fcurves.remove(fcurve)
-                                fcurves_cleaned += 1
+                fcurves = get_fcurves(obj)
+                if fcurves:
+                    # Iterasi mundur karena menghapus saat iterasi
+                    for i in range(len(fcurves) - 1, -1, -1):
+                        fcurve = fcurves[i]
+                        # Deteksi broken path dengan path_resolve
+                        try:
+                            obj.path_resolve(fcurve.data_path)
+                        except Exception:
+                            fcurves.remove(fcurve)
+                            fcurves_cleaned += 1
                 
                 total_fcurves_cleaned += fcurves_cleaned
                 objects_processed += 1
@@ -820,6 +916,15 @@ class ANIMZ_PT_panel(Panel):
         animz_props = scene.animz_properties
         
         layout.label(text="Auto Pop-Up")
+
+        # Peringatan bila node group di file ini versi lama
+        node_group = bpy.data.node_groups.get(NODE_GROUP_NAME)
+        if node_group and get_node_group_version(node_group) < TEMPLATE_VERSION:
+            warn = layout.box()
+            warn.alert = True
+            warn.label(text=f"Node group outdated (v{get_node_group_version(node_group)} < v{TEMPLATE_VERSION})", icon='ERROR')
+            warn.operator("animz.upgrade_node_group", icon='FILE_REFRESH')
+
         # Create a single box for both In and Out animations
         main_box = layout.box()
         
@@ -899,6 +1004,7 @@ class ANIMZ_properties(PropertyGroup):
         ('8', "Slide → Ease Out", "8 | 20-45 Frame"),
         ('9', "Slide ← Ease Out", "9 | 20-45 Frame"),
         ('10', "Rotate ← & Back", "10 | 30 Frame"),
+        ('11', "Bounce & Swing X", "11 | 30 Frame"),
     ]
 
     out_type_items = [
@@ -954,6 +1060,7 @@ class ANIMZ_properties(PropertyGroup):
 classes = (
     ANIMZ_properties,
     ANIMZ_OT_append_node,
+    ANIMZ_OT_upgrade_node_group,
     ANIMZ_OT_animate_popup,
     ANIMZ_OT_animate_out_popup,
     ANIMZ_OT_update_in_animation,

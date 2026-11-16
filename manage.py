@@ -23,11 +23,6 @@ panel_visibility_props = {
         description="Tampilkan/sembunyikan panel Zeus Pack Assistant",
         default=True
     ),
-    "show_style_render_panel": BoolProperty(
-        name="3D Expl. Style Settings",
-        description="Tampilkan/sembunyikan panel 3D Explainer Style",
-        default=True
-    ),
     "show_animz_panel": BoolProperty(
         name="AnimZ™",
         description="Tampilkan/sembunyikan panel AnimZ",
@@ -68,7 +63,6 @@ def draw_manage_section(self, layout):
     grid.prop(self, "show_bonver_panel", toggle=True)
     grid.prop(self, "show_attach_panel", toggle=True)
     grid.prop(self, "show_pack_panel", toggle=True)
-    grid.prop(self, "show_style_render_panel", toggle=True)
     grid.prop(self, "show_animz_panel", toggle=True)
     grid.prop(self, "show_coming_soon_1", toggle=True)
     grid.prop(self, "show_coming_soon_2", toggle=True)
