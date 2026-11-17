@@ -1,7 +1,7 @@
 bl_info = {
     "name": "ZeusLab",
     "author": "Putra Tegar",
-    "version": (1, 10, 0),
+    "version": (1, 10, 1),
     "blender": (5, 0, 1),
     "description": "Addon for helping Zeus's workflow for animation",
     "location": "3D Side Panel > ZeusLab",
