@@ -57,6 +57,15 @@ Hidden by default. Enable it in preferences.
 
 Procedural pop-up and wiggle animation for selected Mesh, Curve and Text objects, driven by Geometry Nodes groups shipped in `fileset/template/auto_pop_up.blend`. The node groups are appended automatically the first time you use them.
 
+AnimZ is in two places with the same controls:
+
+- **Sidebar**: 3D Viewport > `N` > **ZeusLab** tab. Show or hide it in preferences.
+- **Popup**: press `Alt` + `` ` `` in the 3D Viewport to open a compact AnimZ panel at the mouse cursor. The popup works even when the sidebar panel is hidden. It has three rows:
+  - In: type, refresh, duration, **In**.
+  - Out: type, refresh, duration, **Out**.
+  - **Wiggle** (add), copy, remove, settings (gear) and Delete Animations (trash). The gear shows the active object's wiggle settings.
+ To change the key, go to **Edit > Preferences > Keymap**, search for `wm.call_panel` and edit the entry for `ANIMZ_PT_popup`.
+
 - **In Animation**: pick a type, set the duration in frames, then press **Animate In**. Types: Ease Out, Ease In Out, Bounce, Jump & Bounce, Jump Rotate & Bounce, Slide Elastic (down), Slide Ease Out (up, down, right, left), Rotate & Back, Bounce & Swing X.
 - **Out Animation**: same controls with **Animate Out**. Types: Ease In, Ease In Out, Back, Jump & Bounce, Jump Rotate & Bounce, X-Axis Scale, Slide Ease Out (up, down, right, left), Rotate & Back.
 - Animating again replaces the previous In (or Out) keyframes. AnimZ warns when an Out starts before the In has finished.
@@ -78,12 +87,15 @@ A seamless looping wiggle on location, rotation and scale, as a separate `auto_w
 |---|---|
 | Strength | Master amount, 0 to 1. Keyframe it to fade the wiggle in or out |
 | Loop Duration | Seconds until the motion repeats exactly |
-| Randomness | 0 = smooth regular sway, higher = more irregular motion |
+| Randomness | 0 (default) = smooth even sine wave, 1 = irregular organic noise |
+| Random Offset | 0 = all axes move together in one rhythm, 1 = every axis and object starts at a random point of the loop (default 0.5) |
 | Location | Max offset per axis, times the object's largest side |
 | Rotation | Max rotation per axis |
 | Scale | Max scale change per axis (0.05 = 5%) |
 | Uniform Scale | Off: axes scale independently (squash and stretch) |
-| Seed | Different motion per object |
+| Seed | Pattern of Random Offset and Randomness per object |
+
+Files with the older `auto_wiggle` (v1) show the upgrade warning. Upgrading keeps values and keyframes, but resets Randomness (0) and Random Offset (0.5) to the new defaults so the wiggle becomes the new smooth wave.
 
 Notes on the node groups:
 

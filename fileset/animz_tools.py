@@ -1,6 +1,6 @@
 import bpy
 from bpy.types import Panel, Operator, PropertyGroup
-from bpy.props import IntProperty, EnumProperty
+from bpy.props import IntProperty, EnumProperty, BoolProperty
 from bpy_extras import anim_utils
 from ..preferences import get_addon_preferences
 import os
@@ -11,7 +11,7 @@ NODE_GROUP_NAME = "auto_pop_up"
 WIGGLE_NODE_GROUP_NAME = "auto_wiggle"
 # Harus sama dengan custom property "animz_version" pada node group di template/auto_pop_up.blend
 TEMPLATE_VERSION = 3
-WIGGLE_VERSION = 1
+WIGGLE_VERSION = 2
 
 # Tipe object yang bisa memakai modifier Geometry Nodes AnimZ
 SUPPORTED_TYPES = {'MESH', 'CURVE', 'FONT'}
@@ -365,6 +365,63 @@ def upgrade_node_group():
     return (True, message)
 
 
+def outdated_node_groups():
+    """Node groups in this file older than the template: list of (name, file_version, template_version)"""
+    found = []
+    for name, target in ((NODE_GROUP_NAME, TEMPLATE_VERSION), (WIGGLE_NODE_GROUP_NAME, WIGGLE_VERSION)):
+        group = bpy.data.node_groups.get(name)
+        if group is not None and get_node_group_version(group) < target:
+            found.append((name, get_node_group_version(group), target))
+    return found
+
+
+def outdated_text():
+    """Short label for the panel warning, or None when everything is current"""
+    found = outdated_node_groups()
+    if not found:
+        return None
+    return " | ".join(f"{name} v{old} < v{new}" for name, old, new in found)
+
+
+def upgrade_wiggle_group():
+    """
+    Ganti auto_wiggle lama dengan versi template. Modifier tetap memakai socket
+    identifier yang sama, jadi nilai dan keyframe tetap terhubung.
+    v1 -> v2: Randomness dulu = noise penuh, sekarang 0 = gelombang halus rata,
+    jadi Randomness dan Random Offset di-reset ke default baru.
+    Returns: (success: bool, message: str)
+    """
+    old = bpy.data.node_groups.get(WIGGLE_NODE_GROUP_NAME)
+    if old is None or get_node_group_version(old) >= WIGGLE_VERSION:
+        return (True, "")
+    new = append_template_node_group(WIGGLE_NODE_GROUP_NAME)
+    if new is None:
+        return (False, f"Template not found: {get_template_path()}")
+
+    old_version = get_node_group_version(old)
+    modifiers = [m for obj in bpy.data.objects for m in obj.modifiers
+                 if m.type == 'NODES' and m.node_group == old]
+    for mod in modifiers:
+        mod.node_group = new  # Reassign so the modifier picks up the new sockets
+    old.user_remap(new)
+    bpy.data.node_groups.remove(old)
+    new.name = WIGGLE_NODE_GROUP_NAME
+    new.use_fake_user = True
+
+    if old_version < 2:
+        reset = {}
+        for name in ("Randomness", "Random Offset"):
+            item = next((i for i in new.interface.items_tree
+                         if i.item_type == 'SOCKET' and i.in_out == 'INPUT' and i.name == name), None)
+            if item is not None:
+                reset[item.identifier] = item.default_value
+        for mod in modifiers:
+            for identifier, value in reset.items():
+                if has_input(mod, identifier):
+                    set_input(mod, identifier, value)
+    return (True, f"Upgraded auto_wiggle v{old_version} -> v{WIGGLE_VERSION} on {len(modifiers)} object(s)")
+
+
 def find_float_socket(node_group):
     """
     Cari socket identifier untuk input float bernama 'In' di Geometry Node Group.
@@ -677,7 +734,7 @@ class ANIMZ_OT_upgrade_node_group(Operator):
     """Replace the auto_pop_up node group in this file with the latest template"""
     bl_idname = "animz.upgrade_node_group"
     bl_label = "Upgrade Node Group"
-    bl_description = ("Replace the outdated auto_pop_up node group with the latest template. "
+    bl_description = ("Replace outdated auto_pop_up / auto_wiggle node groups with the latest template. "
                       "Existing modifiers and keyframes are kept, but their motion may change")
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -686,7 +743,16 @@ class ANIMZ_OT_upgrade_node_group(Operator):
 
     def execute(self, context):
         try:
-            success, message = upgrade_node_group()
+            messages = []
+            success = True
+            pop = bpy.data.node_groups.get(NODE_GROUP_NAME)
+            if pop is not None and get_node_group_version(pop) < TEMPLATE_VERSION:
+                success, msg = upgrade_node_group()
+                messages.append(msg)
+            if success:
+                success, msg = upgrade_wiggle_group()
+                messages.append(msg)
+            message = " | ".join(m for m in messages if m) or "Node groups are up to date"
         except Exception as e:
             import traceback
             traceback.print_exc()
@@ -1153,22 +1219,12 @@ class ANIMZ_OT_remove_wiggle(Operator):
 # Panel
 # =======================================================
 
-class ANIMZ_PT_panel(Panel):
-    """Panel Animz di sidebar"""
+class ANIMZ_PanelDraw:
+    """Shared AnimZ panel content for the N-panel and the Alt + ` popup"""
     bl_label = "AnimZ™"
-    bl_idname = "ANIMZ_PT_panel"
     bl_space_type = 'VIEW_3D'
-    bl_region_type = 'UI'
-    bl_category = 'ZeusLab'
     bl_description = "Auto Pop-Up for animator based on geo-node"
 
-    @classmethod
-    def poll(cls, context):
-        prefs = get_addon_preferences()
-        if prefs:
-            return prefs.show_animz_panel
-        return True
-    
     def draw(self, context):
         layout = self.layout
         scene = context.scene
@@ -1177,11 +1233,11 @@ class ANIMZ_PT_panel(Panel):
         layout.label(text="Auto Pop-Up")
 
         # Peringatan bila node group di file ini versi lama
-        node_group = bpy.data.node_groups.get(NODE_GROUP_NAME)
-        if node_group and get_node_group_version(node_group) < TEMPLATE_VERSION:
+        outdated = outdated_text()
+        if outdated:
             warn = layout.box()
             warn.alert = True
-            warn.label(text=f"Node group outdated (v{get_node_group_version(node_group)} < v{TEMPLATE_VERSION})", icon='ERROR')
+            warn.label(text=f"Outdated: {outdated}", icon='ERROR')
             warn.operator("animz.upgrade_node_group", icon='FILE_REFRESH')
 
         # Create a single box for both In and Out animations
@@ -1338,6 +1394,115 @@ class ANIMZ_properties(PropertyGroup):
         subtype='TIME'
     )
 
+    popup_show_wiggle: BoolProperty(
+        name="Wiggle Settings",
+        description="Show the active object's wiggle settings in the Alt + ` popup",
+        default=False
+    )
+
+# =======================================================
+# Register/Unregister
+# =======================================================
+
+class ANIMZ_PT_panel(ANIMZ_PanelDraw, Panel):
+    """AnimZ panel in the 3D Viewport sidebar (N-panel), ZeusLab tab"""
+    bl_idname = "ANIMZ_PT_panel"
+    bl_region_type = 'UI'
+    bl_category = 'ZeusLab'
+
+    @classmethod
+    def poll(cls, context):
+        prefs = get_addon_preferences()
+        if prefs:
+            return prefs.show_animz_panel
+        return True
+
+
+class ANIMZ_PT_popup(ANIMZ_PanelDraw, Panel):
+    """AnimZ panel as a floating popup in the 3D Viewport (Alt + `)"""
+    bl_idname = "ANIMZ_PT_popup"
+    bl_region_type = 'WINDOW'
+    bl_ui_units_x = 12
+
+    def draw(self, context):
+        """Compact layout: one row per action, so the popup covers little of the viewport"""
+        layout = self.layout
+        props = context.scene.animz_properties
+        col = layout.column(align=False)
+
+        if outdated_node_groups():
+            row = col.row(align=True)
+            row.alert = True
+            row.operator("animz.upgrade_node_group", icon='ERROR', text="Upgrade Node Groups")
+
+        # In / Out: [type][refresh][duration][animate]
+        for type_prop, update_op, dur_prop, animate_op, label in (
+                ("popup_type", "animz.update_in_animation", "frame_duration", "animz.animate_popup", "In"),
+                ("out_type", "animz.update_out_animation", "out_frame_duration", "animz.animate_out_popup", "Out")):
+            split = col.split(factor=0.5, align=True)
+            split.prop(props, type_prop, text="")
+            row = split.row(align=True)
+            row.operator(update_op, text="", icon='FILE_REFRESH')
+            row.prop(props, dur_prop, text="")
+            row.operator(animate_op, text=label, icon='PLAY')
+
+        # Wiggle and Delete: [wiggle][copy][remove][settings]   [delete]
+        row = col.row(align=False)
+        sub = row.row(align=True)
+        sub.operator("animz.add_wiggle", text="Wiggle", icon='FORCE_TURBULENCE')
+        sub.operator("animz.copy_wiggle", text="", icon='COPYDOWN')
+        sub.operator("animz.remove_wiggle", text="", icon='X')
+        sub.prop(props, "popup_show_wiggle", text="", icon='PREFERENCES')
+        row.operator("animz.delete_animation", text="", icon='TRASH')
+
+        if not props.popup_show_wiggle:
+            return
+        wiggle_group = bpy.data.node_groups.get(WIGGLE_NODE_GROUP_NAME)
+        active = context.active_object
+        wiggle_mod = find_modifier(active, wiggle_group) if active and wiggle_group else None
+        if wiggle_mod is None:
+            col.label(text="Active object has no wiggle", icon='INFO')
+            return
+        box = col.box().column(align=True)
+        for item in wiggle_group.interface.items_tree:
+            if (item.item_type != 'SOCKET' or item.in_out != 'INPUT' or
+                    item.socket_type == 'NodeSocketGeometry' or not has_input(wiggle_mod, item.identifier)):
+                continue
+            if item.socket_type == 'NodeSocketVector':
+                split = box.split(factor=0.22, align=True)
+                split.label(text=item.name)
+                draw_input(split.row(align=True), wiggle_mod, item.identifier, text="")
+            else:
+                draw_input(box, wiggle_mod, item.identifier, text=item.name)
+
+
+# =======================================================
+# Keymap
+# =======================================================
+
+addon_keymaps = []
+
+
+def register_keymap():
+    kc = bpy.context.window_manager.keyconfigs.addon
+    if kc is None:  # Background mode
+        return
+    km = kc.keymaps.new(name="3D View", space_type='VIEW_3D')
+    kmi = km.keymap_items.new("wm.call_panel", type='ACCENT_GRAVE', value='PRESS', alt=True)
+    kmi.properties.name = ANIMZ_PT_popup.bl_idname
+    kmi.properties.keep_open = True
+    addon_keymaps.append((km, kmi))
+
+
+def unregister_keymap():
+    for km, kmi in addon_keymaps:
+        try:
+            km.keymap_items.remove(kmi)
+        except (ReferenceError, RuntimeError):
+            pass
+    addon_keymaps.clear()
+
+
 # =======================================================
 # Register/Unregister
 # =======================================================
@@ -1355,16 +1520,19 @@ classes = (
     ANIMZ_OT_copy_wiggle,
     ANIMZ_OT_remove_wiggle,
     ANIMZ_PT_panel,
+    ANIMZ_PT_popup,
 )
 
 def register():
     for cls in classes:
         bpy.utils.register_class(cls)
-    
+
     bpy.types.Scene.animz_properties = bpy.props.PointerProperty(type=ANIMZ_properties)
+    register_keymap()
 
 
 def unregister():
+    unregister_keymap()
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
     
