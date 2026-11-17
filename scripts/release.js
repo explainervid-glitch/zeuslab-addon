@@ -180,5 +180,4 @@ if (dryRun) {
   process.exit(0);
 }
 console.log(`\nReleased ${tag}: https://github.com/${repo}/releases/tag/${tag}`);
-console.log("Blender's updater reads version.json from the URL in updater/updater.py (version_url).");
-console.log("Upload the new version.json there so installed addons see this release.");
+console.log("Installed addons find this release through the GitHub API (updater/updater.py).");

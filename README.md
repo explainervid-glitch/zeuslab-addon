@@ -130,7 +130,7 @@ Operators `fps.convert_to_30` and `fps.convert_to_60` convert a scene's animatio
 Open **Edit > Preferences > Add-ons > ZeusLab**. There are two tabs:
 
 - **Manage Panels**: toggle which panels appear in the sidebar. Changes apply immediately.
-- **Update**: shows the installed version. **Cek Update** checks the remote `version.json`, shows the changelog, and offers **Install Update**. The updater backs up the current addon folder to the system temp directory, installs the new files, and asks you to restart Blender.
+- **Update**: shows the installed version. **Cek Update** checks the latest [GitHub release](https://github.com/explainervid-glitch/zeuslab-addon/releases), shows its notes as the changelog, and offers **Install Update**. The updater downloads the release zip, backs up the current addon folder to the system temp directory, installs the new files, and asks you to restart Blender. It refuses to install over a development copy (a git repo or a symlinked folder), so it never overwrites the source repo.
 
 | Panel | Default |
 |---|---|
@@ -147,7 +147,7 @@ ZeusLab/
 ├── __init__.py            # bl_info, module registration
 ├── preferences.py         # Addon preferences (Manage Panels / Update tabs)
 ├── manage.py              # Panel visibility section drawing
-├── version.json           # Version, download URL and changelog for the updater
+├── version.json           # Version source for packaging and releases
 ├── bonver/
 │   ├── bonesnap.py        # Snap Bone panel and operators
 │   ├── simpletake.py      # Simple Take (Child Of attach/detach)
@@ -198,7 +198,7 @@ Requires the [GitHub CLI](https://cli.github.com/) (`gh auth login`) with push a
    npm run release -- minor --notes "1. New Wiggle Loop\n2. Bug fixes"
    ```
 
-4. Upload the new `version.json` to the location in `updater/updater.py` (`version_url`), so installed addons see the update.
+Installed addons see the new release on their next **Cek Update**. Draft and pre-release versions are skipped.
 
 The release script does these steps:
 

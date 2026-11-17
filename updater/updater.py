@@ -8,60 +8,89 @@ import shutil
 import tempfile
 from datetime import datetime
 
+GITHUB_REPO = "explainervid-glitch/zeuslab-addon"
+RELEASE_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+ASSET_PREFIX = "ZeusLab-v"  # Release asset name: ZeusLab-v<version>.zip
+USER_AGENT = "ZeusLab-Blender-Addon"  # GitHub API rejects requests without a User-Agent
+
+
+def _ssl_context():
+    """Verified SSL context. Uses certifi when the system store is missing."""
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except ImportError:
+        return ssl.create_default_context()
+
+
+def _open(url, accept=None):
+    headers = {"User-Agent": USER_AGENT}
+    if accept:
+        headers["Accept"] = accept
+    request = urllib.request.Request(url, headers=headers)
+    return urllib.request.urlopen(request, context=_ssl_context(), timeout=30)
+
+
+def _parse_version(tag):
+    """'v1.10.0' -> (1, 10, 0)"""
+    return tuple(int(part) for part in tag.lstrip("vV").split("."))
+
+
 class ZeusLabUpdater:
-    """Class untuk mengelola update addon ZeusLab"""
-    
+    """Class untuk mengelola update addon ZeusLab (sumber: GitHub Releases)"""
+
     def __init__(self):
-        self.addon_name = "ZeusDev_Tools"
+        self.addon_name = "ZeusLab"
         self.addon_dir = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
         self.temp_dir = os.path.join(tempfile.gettempdir(), "zeuslab_update")
-        
-        # URL untuk file version.json di Google Drive
-        # Buat file direct link dari Google Drive dengan format berikut
-        self.version_url = "https://drive.google.com/uc?export=download&id=1kqlRz0pLqQmdXgImEXXcfh-7cbagi8SP"
-        
+
     def check_for_updates(self):
-        """Memeriksa apakah update tersedia"""
+        """Cek release terbaru di GitHub. Returns (has_update, version, download_url, changelog)"""
         try:
-            # Bypass SSL verification untuk menghindari error
-            context = ssl._create_unverified_context()
-            
-            # Download file version.json
-            response = urllib.request.urlopen(self.version_url, context=context)
-            data = json.loads(response.read())
-            
-            # Dapatkan versi saat ini dari bl_info
+            with _open(RELEASE_API_URL, accept="application/vnd.github+json") as response:
+                data = json.loads(response.read())
+
+            latest_version = _parse_version(data["tag_name"])
+            asset = next((a for a in data.get("assets", [])
+                          if a["name"].startswith(ASSET_PREFIX) and a["name"].endswith(".zip")), None)
+            if asset is None:
+                print(f"ZeusLab updater: release {data['tag_name']} has no {ASSET_PREFIX}*.zip asset")
+                return False, None, "", ""
+
             from .. import bl_info
-            current_version = bl_info["version"]
-            
-            # Bandingkan versi
-            latest_version = tuple(data["version"])
-            download_url = data["download_url"]
-            
+            current_version = tuple(bl_info["version"])
+
             if latest_version > current_version:
-                return True, latest_version, download_url, data.get("changelog", "")
-            else:
-                return False, current_version, "", ""
-                
+                return True, latest_version, asset["browser_download_url"], data.get("body") or ""
+            return False, current_version, "", ""
+
         except Exception as e:
             print(f"Error saat memeriksa update: {str(e)}")
             return False, None, "", ""
-            
+
+    def is_dev_install(self):
+        """True bila addon dijalankan dari repo git / symlink: update akan menghapus repo"""
+        addon_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # Path as Blender sees it
+        return (os.path.exists(os.path.join(self.addon_dir, ".git")) or
+                os.path.islink(addon_path) or
+                os.path.realpath(addon_path) != os.path.abspath(addon_path))
+
     def download_and_install_update(self, download_url):
         """Download dan install update addon"""
+        if self.is_dev_install():
+            return False, ("Development install (git repo or symlink) detected. "
+                           "Update with git pull instead, so the repo is not overwritten.")
         try:
-            # Buat direktori temp jika belum ada
-            if not os.path.exists(self.temp_dir):
-                os.makedirs(self.temp_dir)
-            
+            # Mulai dari direktori temp yang bersih
+            if os.path.exists(self.temp_dir):
+                shutil.rmtree(self.temp_dir)
+            os.makedirs(self.temp_dir)
+
             # Path file zip untuk download
             zip_path = os.path.join(self.temp_dir, "zeuslab_update.zip")
-            
-            # Download file zip
-            context = ssl._create_unverified_context()
-            
-            # Gunakan urlopen sebagai pengganti urlretrieve untuk dukungan context SSL
-            with urllib.request.urlopen(download_url, context=context) as response:
+
+            # Download file zip (GitHub redirect ke storage, urlopen mengikuti redirect)
+            with _open(download_url, accept="application/octet-stream") as response:
                 with open(zip_path, 'wb') as out_file:
                     out_file.write(response.read())
             

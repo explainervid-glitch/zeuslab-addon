@@ -19,6 +19,9 @@ class ZeusLabCheckForUpdates(Operator):
             context.scene.zeuslab_changelog = changelog
             
             self.report({'INFO'}, f"Update tersedia: v{context.scene.zeuslab_latest_version}")
+        elif version is None:
+            context.scene.zeuslab_update_available = False
+            self.report({'ERROR'}, "Could not check GitHub for updates. See the system console for details.")
         else:
             context.scene.zeuslab_update_available = False
             self.report({'INFO'}, "Addon sudah versi terbaru.")
