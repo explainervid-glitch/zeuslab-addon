@@ -1,9 +1,9 @@
 {
     "version": [
         1,
-        9,
-        4
+        10,
+        0
     ],
-    "download_url": "https://github.com/explainervid-glitch/zeuslab-addon/releases/download/v1.9.4/ZeusLab-v1.9.4.zip",
-    "changelog": "1. build: add npm run release to tag and publish GitHub releases\n2. feat(animz): add looping Wiggle modifier and fix pop-up bugs\n3. fix(animz): repair node template and Blender 5 keyframing; fix bonesnap; drop 3D Explainer Style"
+    "download_url": "https://github.com/explainervid-glitch/zeuslab-addon/releases/download/v1.10.0/ZeusLab-v1.10.0.zip",
+    "changelog": "1. AnimZ popup panel on Alt + backtick in the 3D Viewport (compact, N-panel still available)\n2. Wiggle is now a smooth, even looping wave by default\n3. New Random Offset option, Randomness blends in organic noise\n4. New wiggle defaults (Loop 3 s, Location Z 0.5, Rotation Z 15 deg)\n5. Upgrade Node Groups also upgrades older wiggles"
 }
