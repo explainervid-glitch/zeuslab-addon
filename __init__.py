@@ -19,6 +19,10 @@ from . import fileset
 from . import updater
 from . import preferences
 from . import manage
+from . import zeploy_counts
+
+# Feature use for zeploy, the studio's deployment tool (see zeploy_counts.py).
+zeploy_counts.count_features(__name__, bl_info["version"])
 
 
 modules = [bonver,

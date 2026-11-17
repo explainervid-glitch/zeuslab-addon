@@ -140,6 +140,12 @@ Open **Edit > Preferences > Add-ons > ZeusLab**. There are two tabs:
 | Mixamo Rig to Bones | Hidden |
 | Zeus Pack Assistant | Hidden |
 
+## Usage counts for zeploy
+
+On PCs where the studio's deployment tool zeploy is installed, ZeusLab counts which features get used, so the zeploy dashboard can show which tools the team relies on. Each run of a ZeusLab operator (Snap Bone, Simple Take, Mixamo Rig to Bones, AnimZ, FPS Converter, Pack, Playblast) adds one line to `%LOCALAPPDATA%\zeploy\usage\ZeusLab.jsonl`, which zeploy's agent collects every minute. A cancelled run is not counted; one that raises counts as an error. An operator run by another ZeusLab operator (Prepare Bake runs Duplicate Collection and Bake) counts once, as the outer one. List buttons, helpers and the updater are not counted. No file names, scene data or user names are recorded, Blender sends nothing over the network, and on a PC without zeploy nothing is written.
+
+The feature names are in `zeploy_counts.py` (`FEATURES`); add a new operator's `bl_idname` there to count it. `zeploy_usage.py` is zeploy's helper, copied unchanged from the zeploy repository.
+
 ## Project Structure
 
 ```
@@ -148,6 +154,8 @@ ZeusLab/
 ├── preferences.py         # Addon preferences (Manage Panels / Update tabs)
 ├── manage.py              # Panel visibility section drawing
 ├── version.json           # Version source for packaging and releases
+├── zeploy_counts.py       # Which operators count as features for zeploy
+├── zeploy_usage.py        # zeploy's usage helper (copied unchanged)
 ├── bonver/
 │   ├── bonesnap.py        # Snap Bone panel and operators
 │   ├── simpletake.py      # Simple Take (Child Of attach/detach)
