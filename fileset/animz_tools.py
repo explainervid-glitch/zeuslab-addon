@@ -10,7 +10,7 @@ import re
 NODE_GROUP_NAME = "auto_pop_up"
 WIGGLE_NODE_GROUP_NAME = "auto_wiggle"
 # Harus sama dengan custom property "animz_version" pada node group di template/auto_pop_up.blend
-TEMPLATE_VERSION = 3
+TEMPLATE_VERSION = 5
 WIGGLE_VERSION = 2
 
 # Tipe object yang bisa memakai modifier Geometry Nodes AnimZ
@@ -97,6 +97,9 @@ def set_input(modifier, identifier, value):
         getattr(inputs, identifier).value = value
     else:
         modifier[identifier] = value
+        # 5.0/5.1: writing the IDProperty does not refresh the evaluated object by itself,
+        # so the viewport kept showing the old preset until something else changed
+        modifier.id_data.update_tag()
 
 
 def input_data_path(modifier, identifier):
@@ -242,6 +245,72 @@ def get_template_path():
         if os.path.exists(alt_template):
             return alt_template
     return template_file
+
+
+# =======================================================
+# Preset list (read from the template node group names)
+# =======================================================
+
+# Preset groups in the template are named "<In|Out> <NN> | <Name>", e.g. "In 05 | Slide ↓ Elastic".
+# NN is the index in the In/Out library. A new group with the next number appears in the menu.
+PRESET_NAME_RE = re.compile(r"^(In|Out) (\d+) \| (.+)$")
+
+# Used only when the template cannot be read
+FALLBACK_PRESETS = {
+    "In": ["Ease Out", "Ease In Out", "Bounce", "Jump & Bounce", "Jump, Rotate & Bounce", "Slide ↓ Elastic",
+           "Slide ↑ Ease Out", "Slide ↓ Ease Out", "Slide → Ease Out", "Slide ← Ease Out", "Rotate ← & Back",
+           "Bounce & Swing X", "Drop Jiggle"],
+    "Out": ["Ease In", "Ease In Out", "Back", "Jump & Bounce", "Jump, Rotate & Bounce", "X-Axis Scale",
+            "Slide ↑ Ease Out", "Slide ↓ Ease Out", "Slide → Ease Out", "Slide ← Ease Out", "Rotate ← & Back"],
+}
+
+# Suggested duration shown in the tooltip. Presets not listed show "30 Frame".
+PRESET_HINTS = {
+    "In": {5: "60-90 Frame, Linear", 6: "20-45 Frame", 7: "20-45 Frame", 8: "20-45 Frame", 9: "20-45 Frame",
+           12: "60-90 Frame"},
+    "Out": {6: "20-45 Frame", 7: "20-45 Frame", 8: "20-45 Frame", 9: "20-45 Frame"},
+}
+
+# Enum items must stay referenced while Blender uses them, so keep them in a module cache
+_preset_items_cache = {}
+
+
+def read_template_presets():
+    """{"In": {index: name}, "Out": {...}} from the template node group names (names only, nothing is appended)"""
+    found = {"In": {}, "Out": {}}
+    path = get_template_path()
+    if not os.path.exists(path):
+        return found
+    try:
+        if bpy.data.filepath and os.path.samefile(bpy.data.filepath, path):
+            names = [g.name for g in bpy.data.node_groups]  # Editing the template itself
+        else:
+            with bpy.data.libraries.load(path, link=False) as (data_from, data_to):
+                names = list(data_from.node_groups)
+    except Exception as e:
+        print(f"AnimZ: could not read presets from template: {e}")
+        return found
+    for name in names:
+        match = PRESET_NAME_RE.match(name)
+        if match:
+            found[match.group(1)][int(match.group(2))] = match.group(3)
+    return found
+
+
+def preset_items(direction):
+    """EnumProperty items for 'In' or 'Out': (identifier, name, description, value)"""
+    if direction not in _preset_items_cache:
+        presets = read_template_presets()[direction] or dict(enumerate(FALLBACK_PRESETS[direction]))
+        hints = PRESET_HINTS[direction]
+        _preset_items_cache[direction] = [
+            (str(k), name, f"{k} | {hints.get(k, '30 Frame')}", k) for k, name in sorted(presets.items())
+        ]
+    return _preset_items_cache[direction]
+
+
+def preset_label(direction, identifier):
+    """Display name of a preset identifier, e.g. preset_label('In', '3') -> 'Jump & Bounce'"""
+    return next((item[1] for item in preset_items(direction) if item[0] == identifier), "Unknown")
 
 
 def append_template_node_group(name=NODE_GROUP_NAME):
@@ -781,7 +850,7 @@ class ANIMZ_OT_animate_popup(Operator):
         if not selected_objects:
             self.report({'WARNING'}, NO_SELECTION_MESSAGE)
             return {'CANCELLED'}
-        
+
         # === AUTO-APPEND NODE GROUP JIKA BELUM ADA ===
         node_group = get_or_append_node_group()
         if node_group is None:
@@ -797,31 +866,27 @@ class ANIMZ_OT_animate_popup(Operator):
             return {'CANCELLED'}
 
         # Dapatkan label type untuk report
-        type_label = 'Unknown'
-        for item in ANIMZ_properties.popup_type_items:
-            if item[0] == animz_props.popup_type:
-                type_label = item[1]
-                break
+        type_label = preset_label("In", animz_props.popup_type)
 
         animated_count = 0
 
         for obj in selected_objects:
             success, message = setup_popup_modifier(
-                obj, 
-                context, 
-                node_group, 
-                animation_type_value, 
+                obj,
+                context,
+                node_group,
+                animation_type_value,
                 add_keyframes=True  # DENGAN keyframes
             )
-            
+
             if success:
                 animated_count += 1
             else:
                 self.report({'WARNING'}, f"Failed: {message}")
-        
+
         # Force viewport update
         context.view_layer.update()
-        
+
         if animated_count == 0:
             self.report({'WARNING'}, "No objects animated successfully")
             return {'CANCELLED'}
@@ -858,11 +923,7 @@ class ANIMZ_OT_animate_out_popup(Operator):
             return {'CANCELLED'}
 
         # Dapatkan label type
-        type_label = 'Unknown'
-        for item in ANIMZ_properties.out_type_items:
-            if item[0] == animz_props.out_type:
-                type_label = item[1]
-                break
+        type_label = preset_label("Out", animz_props.out_type)
         
         animated_count = 0
         for obj in selected_objects:
@@ -898,7 +959,7 @@ class ANIMZ_OT_update_in_animation(Operator):
         if not selected_objects:
             self.report({'WARNING'}, NO_SELECTION_MESSAGE)
             return {'CANCELLED'}
-        
+
         if "auto_pop_up" not in bpy.data.node_groups:
             self.report({'ERROR'}, "Geometry Node 'auto_pop_up' not found in file")
             return {'CANCELLED'}
@@ -942,11 +1003,7 @@ class ANIMZ_OT_update_in_animation(Operator):
                 continue
         
         # Dapatkan label type untuk report
-        type_label = 'Unknown'
-        for item in ANIMZ_properties.popup_type_items:
-            if item[0] == animz_props.popup_type:
-                type_label = item[1]
-                break
+        type_label = preset_label("In", animz_props.popup_type)
         
         if updated_count == 0:
             self.report({'WARNING'}, "No modifiers updated (check if objects have auto_pop_up modifier)")
@@ -1022,11 +1079,7 @@ class ANIMZ_OT_update_out_animation(Operator):
                 continue
         
         # Dapatkan label type untuk report
-        type_label = 'Unknown'
-        for item in ANIMZ_properties.out_type_items:
-            if item[0] == animz_props.out_type:
-                type_label = item[1]
-                break
+        type_label = preset_label("Out", animz_props.out_type)
         
         if updated_count == 0:
             self.report({'WARNING'}, "No modifiers updated (check if objects have auto_pop_up modifier)")
@@ -1332,48 +1385,20 @@ class ANIMZ_PanelDraw:
 class ANIMZ_properties(PropertyGroup):
     """Properties untuk Animz addon"""
     
-    # Mapping untuk dropdown type animasi (3-tuple: identifier, name, description)
-    popup_type_items = [
-        ('0', "Ease Out", "0 | 30 Frame"),
-        ('1', "Ease In Out", "1 | 30 Frame"),
-        ('2', "Bounce", "2 | 30 Frame"),
-        ('3', "Jump & Bounce", "3 | 30 Frame"),
-        ('4', "Jump, Rotate & Bounce", "4 | 30 Frame"),
-        ('5', "Slide ↓ Elastic", "5 | 60-90 Frame, Linear"),
-        ('6', "Slide ↑ Ease Out", "6 | 20-45 Frame"),
-        ('7', "Slide ↓ Ease Out", "7 | 20-45 Frame"),
-        ('8', "Slide → Ease Out", "8 | 20-45 Frame"),
-        ('9', "Slide ← Ease Out", "9 | 20-45 Frame"),
-        ('10', "Rotate ← & Back", "10 | 30 Frame"),
-        ('11', "Bounce & Swing X", "11 | 30 Frame"),
-    ]
-
-    out_type_items = [
-        ('0', "Ease In", "0 | 30 Frame"),
-        ('1', "Ease In Out","1 | 30 Frame"),
-        ('2', "Back", "2 | 30 Frame"),
-        ('3', "Jump & Bounce", "3 | 30 Frame"),
-        ('4', "Jump, Rotate & Bounce", "4 | 30 Frame"),
-        ('5', "X-Axis Scale", "5 | 30 Frame"),
-        ('6', "Slide ↑ Ease Out", "6 | 20-45 Frame"),
-        ('7', "Slide ↓ Ease Out", "7 | 20-45 Frame"),
-        ('8', "Slide → Ease Out", "8 | 20-45 Frame"),
-        ('9', "Slide ← Ease Out", "9 | 20-45 Frame"),
-        ('10', "Rotate ← & Back", "10 | 30 Frame"),
-    ]
-    
+    # Preset list comes from the template (node groups named "In 00 | Ease Out" etc.),
+    # so a new preset in the template shows up here without code changes
     popup_type: EnumProperty(
         name="In Type",
         description="Animation behavior for the pop-up effect",
-        items=popup_type_items,
-        default='0'
+        items=lambda self, context: preset_items("In"),
+        default=0
     )
     
     out_type: EnumProperty(
         name="Out Type",
         description="Animation behavior for the out effect",
-        items=out_type_items,
-        default='0'
+        items=lambda self, context: preset_items("Out"),
+        default=0
     )
     
     frame_duration: IntProperty(

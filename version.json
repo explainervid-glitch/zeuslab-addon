@@ -1,8 +1,8 @@
 {
     "version": [
         1,
-        10,
-        1
+        11,
+        0
     ],
     "download_url": "https://github.com/explainervid-glitch/zeuslab-addon/releases/download/v1.10.1/ZeusLab-v1.10.1.zip",
     "changelog": "1. Updater now checks GitHub Releases instead of Google Drive\n2. Secure (verified) downloads\n3. Install Update refuses to overwrite a development copy (git repo or symlink)\n4. Clear error when the update check fails"

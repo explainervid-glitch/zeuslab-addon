@@ -66,13 +66,13 @@ AnimZ is in two places with the same controls:
   - **Wiggle** (add), copy, remove, settings (gear) and Delete Animations (trash). The gear shows the active object's wiggle settings.
  To change the key, go to **Edit > Preferences > Keymap**, search for `wm.call_panel` and edit the entry for `ANIMZ_PT_popup`.
 
-- **In Animation**: pick a type, set the duration in frames, then press **Animate In**. Types: Ease Out, Ease In Out, Bounce, Jump & Bounce, Jump Rotate & Bounce, Slide Elastic (down), Slide Ease Out (up, down, right, left), Rotate & Back, Bounce & Swing X.
+- **In Animation**: pick a type, set the duration in frames, then press **Animate In**. Types: Ease Out, Ease In Out, Bounce, Jump & Bounce, Jump Rotate & Bounce, Slide Elastic (down), Slide Ease Out (up, down, right, left), Rotate & Back, Bounce & Swing X, Drop Jiggle (grows in the air, falls, rocks on the ground to rest; 60 to 90 frames).
 - **Out Animation**: same controls with **Animate Out**. Types: Ease In, Ease In Out, Back, Jump & Bounce, Jump Rotate & Bounce, X-Axis Scale, Slide Ease Out (up, down, right, left), Rotate & Back.
 - Animating again replaces the previous In (or Out) keyframes. AnimZ warns when an Out starts before the In has finished.
 - **Refresh** button next to each type: changes the animation type on existing objects and keeps the keyframes.
 - **Delete Animations**: removes the `auto_pop_up` modifier and its keyframes from the selected objects. Other animation is left alone, and keyframes in an action shared with other objects are kept. **Purge Node Group** removes the node group only when no object uses it any more.
 
-The full preset reference is in `fileset/template/Presets.md`.
+The full preset reference, the node structure and how to add a new preset are in `fileset/template/Presets.md`. The preset menu is read from the template, so a new preset needs no code change.
 
 #### Wiggle Loop
 
@@ -102,7 +102,7 @@ Notes on the node groups:
 - Keyframes on the `In` / `Out` sockets are set to Linear. The easing comes from the Float Curves inside each preset.
 - Rotation is the same for every object size. Translate scales with the object's largest side, so flat objects still move.
 - `In Power` / `Out Power` (0 to 10, default 0.5) set the strength of translate and rotate. At 0.5 a 2 m cube moves exactly as the preset was designed.
-- The template node group carries a version number (`animz_version`, currently 3). When a .blend file has an older `auto_pop_up`, the AnimZ panel shows a warning with an **Upgrade Node Group** button. Upgrading keeps modifiers and keyframes, but the motion of existing objects may change, so it asks for confirmation first. Objects that used the old built-in Wiggle get the new Wiggle modifier with default settings.
+- The template node group carries a version number (`animz_version`, currently 5). When a .blend file has an older `auto_pop_up`, the AnimZ panel shows a warning with an **Upgrade Node Group** button. Upgrading keeps modifiers and keyframes, but the motion of existing objects may change, so it asks for confirmation first. Objects that used the old built-in Wiggle get the new Wiggle modifier with default settings.
 - Presets newer than the file's node group are blocked until you upgrade.
 
 ### Zeus Pack Assistant
@@ -169,7 +169,7 @@ ZeusLab/
 │   └── template/          # .blend templates (node groups, cameras, pack styles)
 ├── panel/                 # Legacy main panel (not registered)
 ├── updater/               # Update checker and installer
-└── scripts/package.js     # Packaging script (dev only)
+└── scripts/               # Dev only: package.js, release.js, animz_add_preset.py
 ```
 
 ## Packaging
