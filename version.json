@@ -1,9 +1,9 @@
 {
     "version": [
         1,
-        12,
+        13,
         0
     ],
-    "download_url": "https://github.com/explainervid-glitch/zeuslab-addon/releases/download/v1.12.0/ZeusLab-v1.12.0.zip",
-    "changelog": "1. AnimZ: Auto Pop-up in the Object Mode right-click menu (opens the Alt + backtick panel)\n2. AnimZ: pop-up keyframes are green (Jitter) and Bezier, so they stand out and can be eased in the Graph Editor\n3. AnimZ: new In preset Drop Jiggle, cleaner pop-up template (v5)\n4. Feature use counting for zeploy"
+    "download_url": "https://github.com/explainervid-glitch/zeuslab-addon/releases/download/v1.13.0/ZeusLab-v1.13.0.zip",
+    "changelog": "1. AnimZ: wiggle settings sync live to the other selected objects (link toggle next to Copy Wiggle, each object keeps its own seed)\n2. AnimZ: Copy Wiggle and synced objects update in the viewport right away"
 }
