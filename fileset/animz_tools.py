@@ -1,4 +1,5 @@
 import bpy
+from bpy.app.handlers import persistent
 from bpy.types import Panel, Operator, PropertyGroup
 from bpy.props import IntProperty, EnumProperty, BoolProperty
 from bpy_extras import anim_utils
@@ -97,9 +98,9 @@ def set_input(modifier, identifier, value):
         getattr(inputs, identifier).value = value
     else:
         modifier[identifier] = value
-        # 5.0/5.1: writing the IDProperty does not refresh the evaluated object by itself,
-        # so the viewport kept showing the old preset until something else changed
-        modifier.id_data.update_tag()
+    # Menulis lewat Python tidak selalu me-refresh object yang dievaluasi (5.0/5.1 IDProperty,
+    # dan object lain yang diubah dari script), jadi viewport tetap menampilkan nilai lama
+    modifier.id_data.update_tag()
 
 
 def input_data_path(modifier, identifier):
@@ -381,6 +382,97 @@ def copy_wiggle_settings(wiggle_group, source, target):
         if has_input(source, item.identifier) and has_input(target, item.identifier):
             value = get_input(source, item.identifier)
             set_input(target, item.identifier, tuple(value) if hasattr(value, '__len__') else value)
+
+
+# Live sync: setting wiggle yang diubah di object aktif ikut ke object terpilih lain yang punya wiggle.
+# Snapshot menyimpan nilai terakhir object aktif, jadi hanya socket yang benar-benar diubah yang disalin,
+# dan ganti object aktif / pilih object lain tidak menimpa setting siapa pun.
+_wiggle_sync = {"key": None, "values": {}, "busy": False}
+
+
+def wiggle_values(wiggle_group, modifier):
+    """Nilai input wiggle (kecuali Geometry dan Seed), vector jadi tuple supaya bisa dibandingkan"""
+    values = {}
+    for item in wiggle_group.interface.items_tree:
+        if (item.item_type != 'SOCKET' or item.in_out != 'INPUT' or
+                item.socket_type == 'NodeSocketGeometry' or item.name == "Seed"):
+            continue
+        if has_input(modifier, item.identifier):
+            value = get_input(modifier, item.identifier)
+            values[item.identifier] = tuple(value) if hasattr(value, '__len__') else value
+    return values
+
+
+def reset_wiggle_sync(*_args):
+    """Lupakan snapshot (undo, redo, buka file), supaya perubahan itu tidak dianggap edit user"""
+    _wiggle_sync["key"] = None
+    _wiggle_sync["values"] = {}
+
+
+@persistent
+def wiggle_sync_handler(scene, depsgraph):
+    if _wiggle_sync["busy"]:
+        return
+    props = getattr(scene, "animz_properties", None)
+    view_layer = bpy.context.view_layer
+    wiggle_group = bpy.data.node_groups.get(WIGGLE_NODE_GROUP_NAME)
+    if props is None or not props.wiggle_sync or view_layer is None or wiggle_group is None:
+        reset_wiggle_sync()
+        return
+    active = view_layer.objects.active
+    modifier = find_modifier(active, wiggle_group) if active else None
+    if modifier is None:
+        reset_wiggle_sync()
+        return
+
+    key = (scene.name, active.name, modifier.name)
+    values = wiggle_values(wiggle_group, modifier)
+    previous = _wiggle_sync["values"]
+    changed = {} if key != _wiggle_sync["key"] else {k: v for k, v in values.items() if previous.get(k) != v}
+    _wiggle_sync["key"] = key
+    _wiggle_sync["values"] = values
+    if not changed:
+        return
+
+    _wiggle_sync["busy"] = True
+    synced = []
+    try:
+        for obj in view_layer.objects.selected:
+            if obj == active:
+                continue
+            target = find_modifier(obj, wiggle_group)
+            if target is None:
+                continue
+            for identifier, value in changed.items():
+                if has_input(target, identifier) and wiggle_values_differ(target, identifier, value):
+                    set_input(target, identifier, value)
+                    if obj.name not in synced:
+                        synced.append(obj.name)
+    finally:
+        _wiggle_sync["busy"] = False
+    if synced:
+        # Tag yang dibuat di dalam depsgraph_update_post dibuang setelah handler selesai,
+        # jadi object tujuan tidak pernah dievaluasi ulang. Tag ulang dari timer (di luar update).
+        bpy.app.timers.register(lambda names=tuple(synced): refresh_objects(names), first_interval=0.0)
+
+
+def refresh_objects(names):
+    """Evaluasi ulang object (dipanggil dari timer) dan gambar ulang viewport"""
+    for name in names:
+        obj = bpy.data.objects.get(name)
+        if obj is not None:
+            obj.update_tag()
+    for window in bpy.context.window_manager.windows:
+        for area in window.screen.areas:
+            if area.type == 'VIEW_3D':
+                area.tag_redraw()
+    return None  # sekali jalan
+
+
+def wiggle_values_differ(modifier, identifier, value):
+    """Set hanya bila beda, supaya tidak memicu update depsgraph yang tidak perlu"""
+    current = get_input(modifier, identifier)
+    return (tuple(current) if hasattr(current, '__len__') else current) != value
 
 
 def upgrade_node_group():
@@ -1351,6 +1443,8 @@ class ANIMZ_PanelDraw:
         row.scale_y = 1.3
         row.operator("animz.add_wiggle", text="Add Wiggle", icon='FORCE_TURBULENCE')
         row.operator("animz.copy_wiggle", text="", icon='COPYDOWN')
+        row.prop(context.scene.animz_properties, "wiggle_sync", text="",
+                 icon='LINKED' if context.scene.animz_properties.wiggle_sync else 'UNLINKED')
         row.operator("animz.remove_wiggle", text="", icon='X')
 
         wiggle_group = bpy.data.node_groups.get(WIGGLE_NODE_GROUP_NAME)
@@ -1425,6 +1519,13 @@ class ANIMZ_properties(PropertyGroup):
         default=False
     )
 
+    wiggle_sync: BoolProperty(
+        name="Sync Wiggle to Selected",
+        description=("Changing a wiggle setting (Strength, Location, ...) on the active object also sets it "
+                     "on the other selected objects that have a wiggle. Each object keeps its own seed"),
+        default=True
+    )
+
 # =======================================================
 # Register/Unregister
 # =======================================================
@@ -1471,11 +1572,12 @@ class ANIMZ_PT_popup(ANIMZ_PanelDraw, Panel):
             row.prop(props, dur_prop, text="")
             row.operator(animate_op, text=label, icon='PLAY')
 
-        # Wiggle and Delete: [wiggle][copy][remove][settings]   [delete]
+        # Wiggle and Delete: [wiggle][copy][sync][remove][settings]   [delete]
         row = col.row(align=False)
         sub = row.row(align=True)
         sub.operator("animz.add_wiggle", text="Wiggle", icon='FORCE_TURBULENCE')
         sub.operator("animz.copy_wiggle", text="", icon='COPYDOWN')
+        sub.prop(props, "wiggle_sync", text="", icon='LINKED' if props.wiggle_sync else 'UNLINKED')
         sub.operator("animz.remove_wiggle", text="", icon='X')
         sub.prop(props, "popup_show_wiggle", text="", icon='PREFERENCES')
         row.operator("animz.delete_animation", text="", icon='TRASH')
@@ -1570,9 +1672,18 @@ def register():
     bpy.types.Scene.animz_properties = bpy.props.PointerProperty(type=ANIMZ_properties)
     bpy.types.VIEW3D_MT_object_context_menu.append(draw_context_menu)
     register_keymap()
+    reset_wiggle_sync()
+    bpy.app.handlers.depsgraph_update_post.append(wiggle_sync_handler)
+    for handlers in (bpy.app.handlers.undo_post, bpy.app.handlers.redo_post, bpy.app.handlers.load_post):
+        handlers.append(reset_wiggle_sync)
 
 
 def unregister():
+    for handlers in (bpy.app.handlers.depsgraph_update_post, bpy.app.handlers.undo_post,
+                     bpy.app.handlers.redo_post, bpy.app.handlers.load_post):
+        for fn in (wiggle_sync_handler, reset_wiggle_sync):
+            if fn in handlers:
+                handlers.remove(fn)
     unregister_keymap()
     bpy.types.VIEW3D_MT_object_context_menu.remove(draw_context_menu)
     for cls in reversed(classes):
