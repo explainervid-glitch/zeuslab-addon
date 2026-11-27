@@ -44,15 +44,15 @@ def get_fcurves(obj):
     return channelbag.fcurves if channelbag else None
 
 
-def set_fcurve_linear(obj, data_path):
-    """Set interpolasi LINEAR, easing sudah diatur oleh Float Curve di preset"""
+def set_fcurve_bezier(obj, data_path):
+    """Set interpolasi BEZIER, supaya timing bisa diatur lewat handle di Graph Editor"""
     fcurves = get_fcurves(obj)
     if not fcurves:
         return
     for fcurve in fcurves:
         if fcurve.data_path == data_path:
             for kp in fcurve.keyframe_points:
-                kp.interpolation = 'LINEAR'
+                kp.interpolation = 'BEZIER'
             fcurve.update()
             break
 
@@ -608,15 +608,15 @@ def setup_popup_modifier(obj, context, node_group, animation_type_value, add_key
             # Ganti animasi lama (bukan menambah), supaya object tidak pop dua kali
             clear_keyframes(obj, data_path)
             
-            # Insert keyframes
+            # Insert keyframes (tipe Jitter / hijau, supaya mudah dibedakan di timeline)
             set_input(modifier, float_socket_id, 0.0)
-            obj.keyframe_insert(data_path=data_path, frame=current_frame)
-            
+            obj.keyframe_insert(data_path=data_path, frame=current_frame, keytype='JITTER')
+
             set_input(modifier, float_socket_id, 1.0)
-            obj.keyframe_insert(data_path=data_path, frame=end_frame)
+            obj.keyframe_insert(data_path=data_path, frame=end_frame, keytype='JITTER')
             
-            # Set interpolasi linear
-            set_fcurve_linear(obj, data_path)
+            # Set interpolasi bezier
+            set_fcurve_bezier(obj, data_path)
         
         return (True, "Success")
         
@@ -739,14 +739,14 @@ def setup_popup_out_modifier(obj, context, node_group, animation_type_value, add
             # Ganti animasi lama (bukan menambah), supaya object tidak pop dua kali
             clear_keyframes(obj, data_path)
             
-            # INSERT KEYFRAMES: OUT animation (0.0 → 1.0)
+            # INSERT KEYFRAMES: OUT animation (0.0 → 1.0), tipe Jitter (hijau)
             set_input(modifier, float_socket_id, 0.0)
-            obj.keyframe_insert(data_path=data_path, frame=current_frame)
+            obj.keyframe_insert(data_path=data_path, frame=current_frame, keytype='JITTER')
             set_input(modifier, float_socket_id, 1.0)
-            obj.keyframe_insert(data_path=data_path, frame=end_frame)
+            obj.keyframe_insert(data_path=data_path, frame=end_frame, keytype='JITTER')
             
-            # Set interpolasi linear
-            set_fcurve_linear(obj, data_path)
+            # Set interpolasi bezier
+            set_fcurve_bezier(obj, data_path)
         
         # === 5. FINAL VIEWPORT UPDATE (PENTING!) ===
         context.view_layer.update()
@@ -1502,6 +1502,21 @@ class ANIMZ_PT_popup(ANIMZ_PanelDraw, Panel):
 
 
 # =======================================================
+# Right-click menu (Object Mode)
+# =======================================================
+
+def draw_context_menu(self, context):
+    """Tombol Auto Pop-up di menu klik kanan Object Mode, membuka panel yang sama dengan Alt + `"""
+    if context.mode != 'OBJECT':
+        return
+    layout = self.layout
+    layout.separator()
+    op = layout.operator("wm.call_panel", text="Auto Pop-up", icon='PLAY')
+    op.name = ANIMZ_PT_popup.bl_idname
+    op.keep_open = True
+
+
+# =======================================================
 # Keymap
 # =======================================================
 
@@ -1553,11 +1568,13 @@ def register():
         bpy.utils.register_class(cls)
 
     bpy.types.Scene.animz_properties = bpy.props.PointerProperty(type=ANIMZ_properties)
+    bpy.types.VIEW3D_MT_object_context_menu.append(draw_context_menu)
     register_keymap()
 
 
 def unregister():
     unregister_keymap()
+    bpy.types.VIEW3D_MT_object_context_menu.remove(draw_context_menu)
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
     

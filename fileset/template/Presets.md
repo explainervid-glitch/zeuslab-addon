@@ -56,7 +56,7 @@ In 04 | Jump, Rotate & Bounce   (one group per preset)
     Factor -> Float Curves (labeled "Scale XYZ", "Rotation Z", ...) -> Combine XYZ -> Translate, Rotation, Scale
 ```
 
-- `Factor` goes from 0 (start) to 1 (end). AnimZ keys it Linear, so the curves define all easing.
+- `Factor` goes from 0 (start) to 1 (end). AnimZ keys it with green (Jitter) Bezier keys, so the Bezier easing adds to the curves' easing. Set the keys to Vector handles (or Linear) in the Graph Editor to get a curve's motion exactly as designed.
 - Translate is multiplied by the object's largest side and `In Power` / `Out Power`. A value of 1 moves one object length at Power 1.
 - Rotation is in radians, multiplied by Power x 2. At Power 0.5 the curve value is used as is.
 - Scale is used as is. In presets end at 1, Out presets start at 1.
