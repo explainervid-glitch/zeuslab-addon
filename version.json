@@ -1,9 +1,9 @@
 {
     "version": [
         1,
-        11,
+        12,
         0
     ],
-    "download_url": "https://github.com/explainervid-glitch/zeuslab-addon/releases/download/v1.10.1/ZeusLab-v1.10.1.zip",
-    "changelog": "1. Updater now checks GitHub Releases instead of Google Drive\n2. Secure (verified) downloads\n3. Install Update refuses to overwrite a development copy (git repo or symlink)\n4. Clear error when the update check fails"
+    "download_url": "https://github.com/explainervid-glitch/zeuslab-addon/releases/download/v1.12.0/ZeusLab-v1.12.0.zip",
+    "changelog": "1. AnimZ: Auto Pop-up in the Object Mode right-click menu (opens the Alt + backtick panel)\n2. AnimZ: pop-up keyframes are green (Jitter) and Bezier, so they stand out and can be eased in the Graph Editor\n3. AnimZ: new In preset Drop Jiggle, cleaner pop-up template (v5)\n4. Feature use counting for zeploy"
 }
